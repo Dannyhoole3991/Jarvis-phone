@@ -1,0 +1,347 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Jarvis</title>
+<style>
+  :root{
+    --cyan: #34e5ff;
+    --blue: #2f8dff;
+    --purple: #9b6bff;
+    --red: #ff6a6a;
+    --text: #eafcff;
+    --text-dim: rgba(220, 240, 255, 0.6);
+  }
+  html, body {
+    margin:0; padding:0; width:100%; height:100%;
+    background: #000;
+    color: var(--text);
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+    overflow:hidden;
+    -webkit-user-select:none; user-select:none;
+  }
+  input { user-select: text; }
+
+  .wrap {
+    width:100%; height:100%;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:26px;
+    padding: 0 20px;
+    box-sizing: border-box;
+  }
+
+  .settings-btn {
+    position:absolute; top:calc(14px + env(safe-area-inset-top)); right:16px;
+    width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    color: var(--text-dim); font-size:14px; background: rgba(255,255,255,0.06);
+    border:1px solid rgba(120,200,255,0.2); z-index:5;
+  }
+
+  /* ---------- The orb ---------- */
+  .orb-outer {
+    position:relative; width:160px; height:160px;
+    display:flex; align-items:center; justify-content:center;
+    z-index:2;
+  }
+  .orb-ring {
+    position:absolute; inset:0; border-radius:50%;
+    border:1.5px solid rgba(90,180,255,0.25);
+    animation: spin 14s linear infinite;
+  }
+  .orb-ring.outer2 { inset:-16px; border-color: rgba(155,107,255,0.16); animation-duration: 22s; animation-direction: reverse; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+  .orb {
+    width:110px; height:110px; border-radius:50%;
+    background: radial-gradient(circle at 38% 32%, #ffffff, var(--cyan) 42%, var(--blue) 78%, #12345f 100%);
+    box-shadow:
+      0 0 30px 6px rgba(52,229,255,0.45),
+      0 0 70px 18px rgba(52,229,255,0.15);
+    transition: transform 0.18s ease, box-shadow 0.18s ease;
+    animation: breathe 3.6s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.035); }
+  }
+
+  .orb-outer.thinking .orb {
+    animation: think 1.1s ease-in-out infinite;
+    background: radial-gradient(circle at 38% 32%, #ffffff, #c9a8ff 42%, var(--purple) 78%, #2a1a55 100%);
+    box-shadow: 0 0 30px 6px rgba(155,107,255,0.5), 0 0 70px 18px rgba(155,107,255,0.18);
+  }
+  @keyframes think {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.06); }
+  }
+
+  .orb-outer.speaking .orb {
+    animation: speak-a 0.62s ease-in-out infinite, speak-glow 0.9s ease-in-out infinite;
+  }
+  @keyframes speak-a {
+    0%   { transform: scale(1)    translateY(0); }
+    30%  { transform: scale(1.09) translateY(-1px); }
+    55%  { transform: scale(0.97) translateY(0.5px); }
+    80%  { transform: scale(1.05) translateY(-0.5px); }
+    100% { transform: scale(1)    translateY(0); }
+  }
+  @keyframes speak-glow {
+    0%, 100% { box-shadow: 0 0 30px 6px rgba(52,229,255,0.5), 0 0 70px 18px rgba(52,229,255,0.18); }
+    50%      { box-shadow: 0 0 42px 10px rgba(52,229,255,0.75), 0 0 90px 26px rgba(52,229,255,0.3); }
+  }
+
+  .orb-outer.recording .orb {
+    animation: record-pulse 0.9s ease-in-out infinite;
+    background: radial-gradient(circle at 38% 32%, #fff, #ff9d9d 42%, var(--red) 78%, #5a1414 100%);
+    box-shadow: 0 0 30px 6px rgba(255,106,106,0.5), 0 0 70px 18px rgba(255,106,106,0.2);
+  }
+  @keyframes record-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+  }
+
+  .status-text {
+    font-size:13px; letter-spacing:0.5px; color: var(--text-dim);
+    min-height:18px; text-align:center;
+  }
+
+  /* ---------- Input + controls ---------- */
+  .input-row {
+    width:100%; max-width:360px;
+    display:flex; align-items:center; gap:8px;
+    background: rgba(255,255,255,0.06);
+    border:1px solid rgba(120,200,255,0.22);
+    border-radius:24px;
+    padding: 6px 6px 6px 18px;
+  }
+  .input-row input {
+    flex:1; background:transparent; border:none; outline:none;
+    color: var(--text); font-size:15px; padding:10px 4px;
+    min-width: 0;
+  }
+  .input-row input::placeholder { color: rgba(220,240,255,0.4); }
+  .round-btn {
+    width:38px; height:38px; border-radius:50%; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center;
+    background: rgba(52,229,255,0.16); border:1px solid rgba(120,200,255,0.3);
+    color: var(--cyan); cursor:pointer; font-size:15px;
+  }
+  .round-btn.mic.active {
+    background: rgba(255,106,106,0.22); border-color: rgba(255,106,106,0.5); color: var(--red);
+  }
+  .round-btn.stop {
+    background: rgba(255,106,106,0.14); border-color: rgba(255,106,106,0.35); color: var(--red);
+  }
+
+  .control-row { display:flex; gap:14px; align-items:center; }
+
+  .toast {
+    position:absolute; bottom:calc(24px + env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%) translateY(6px);
+    background: rgba(20,20,20,0.9); border:1px solid rgba(120,200,255,0.3); border-radius:10px;
+    padding:8px 16px; font-size:12.5px; color:var(--text); opacity:0; pointer-events:none;
+    transition: all 0.25s ease; white-space:nowrap; max-width: 85vw; overflow:hidden; text-overflow:ellipsis;
+  }
+  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+  .setup-overlay {
+    position:fixed; inset:0; background:#000; z-index:20;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px;
+    padding: 0 30px;
+  }
+  .setup-overlay[hidden] { display: none; }
+  .setup-overlay input {
+    width:100%; max-width:320px; background: rgba(255,255,255,0.08); border:1px solid rgba(120,200,255,0.3);
+    border-radius:10px; padding:12px 14px; color:var(--text); font-size:14px; outline:none;
+  }
+  .setup-overlay button {
+    background: rgba(52,229,255,0.18); border:1px solid rgba(120,200,255,0.3); border-radius:10px;
+    padding:10px 20px; color:var(--text); font-size:14px; cursor:pointer;
+  }
+  .setup-overlay p { color: var(--text-dim); font-size:13px; text-align:center; max-width:300px; }
+</style>
+</head>
+<body>
+
+<div class="setup-overlay" id="setupOverlay" hidden>
+  <p>Enter the access key for this Jarvis connection.</p>
+  <input id="secretInput" type="password" placeholder="Access key" autocapitalize="off" autocorrect="off" />
+  <button id="secretSaveBtn">Connect</button>
+</div>
+
+<div class="wrap">
+  <div class="settings-btn" id="settingsBtn" title="Change access key">&#9881;</div>
+
+  <div class="orb-outer" id="orbOuter">
+    <div class="orb-ring"></div>
+    <div class="orb-ring outer2"></div>
+    <div class="orb"></div>
+  </div>
+  <div class="status-text" id="statusText">Tap the mic, or type below</div>
+
+  <div class="input-row">
+    <input id="textInput" type="text" placeholder="Type to Jarvis..." />
+    <div class="round-btn" id="sendBtn" title="Send">&#10148;</div>
+  </div>
+
+  <div class="control-row">
+    <div class="round-btn mic" id="micBtn" title="Hold to talk">&#127908;</div>
+    <div class="round-btn stop" id="stopBtn" title="Stop">&#9632;</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<audio id="player" hidden></audio>
+
+<script>
+const orbOuter = document.getElementById("orbOuter");
+const statusText = document.getElementById("statusText");
+const player = document.getElementById("player");
+const toastEl = document.getElementById("toast");
+
+let toastTimer = null;
+function showToast(text) {
+  toastEl.textContent = text;
+  toastEl.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove("show"), 3200);
+}
+
+function setState(state) {
+  orbOuter.classList.remove("thinking", "speaking", "recording");
+  if (state) orbOuter.classList.add(state);
+  const labels = {
+    thinking: "Thinking...",
+    speaking: "Speaking...",
+    recording: "Listening...",
+  };
+  statusText.textContent = labels[state] || "Tap the mic, or type below";
+}
+
+// ---- Access key setup ----
+function getSecret() { return localStorage.getItem("jarvisPhoneSecret") || ""; }
+function setSecret(value) { localStorage.setItem("jarvisPhoneSecret", value); }
+
+const setupOverlay = document.getElementById("setupOverlay");
+const secretInput = document.getElementById("secretInput");
+document.getElementById("secretSaveBtn").addEventListener("click", () => {
+  const value = secretInput.value.trim();
+  if (!value) return;
+  setSecret(value);
+  setupOverlay.hidden = true;
+});
+document.getElementById("settingsBtn").addEventListener("click", () => {
+  secretInput.value = getSecret();
+  setupOverlay.hidden = false;
+});
+if (!getSecret()) setupOverlay.hidden = false;
+
+// ---- Sending messages ----
+async function sendText(text) {
+  if (!text.trim()) return;
+  setState("thinking");
+  try {
+    const res = await fetch("/api/message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getSecret() },
+      body: JSON.stringify({ text }),
+    });
+    await handleResponse(res);
+  } catch (err) {
+    showToast("Couldn't reach Jarvis.");
+    setState(null);
+  }
+}
+
+async function sendAudio(blob) {
+  setState("thinking");
+  try {
+    const form = new FormData();
+    form.append("audio", blob, "voice.webm");
+    const res = await fetch("/api/message", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + getSecret() },
+      body: form,
+    });
+    await handleResponse(res);
+  } catch (err) {
+    showToast("Couldn't reach Jarvis.");
+    setState(null);
+  }
+}
+
+async function handleResponse(res) {
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    showToast(data.error || "Something went wrong.");
+    setState(null);
+    return;
+  }
+  const data = await res.json();
+  if (data.audio_base64) {
+    player.src = "data:" + data.audio_mime + ";base64," + data.audio_base64;
+    setState("speaking");
+    player.play().catch(() => {});
+    player.onended = () => setState(null);
+  } else {
+    setState(null);
+  }
+}
+
+document.getElementById("stopBtn").addEventListener("click", () => {
+  player.pause();
+  player.currentTime = 0;
+  setState(null);
+});
+
+// ---- Text input ----
+const textInput = document.getElementById("textInput");
+function submitText() {
+  const text = textInput.value.trim();
+  if (!text) return;
+  textInput.value = "";
+  sendText(text);
+}
+document.getElementById("sendBtn").addEventListener("click", submitText);
+textInput.addEventListener("keydown", (e) => { if (e.key === "Enter") submitText(); });
+
+// ---- Voice recording (tap to start, tap again to stop and send) ----
+let mediaRecorder = null;
+let audioChunks = [];
+let isRecording = false;
+
+async function startRecording() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(stream);
+    audioChunks = [];
+    mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+    mediaRecorder.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      const blob = new Blob(audioChunks, { type: "audio/webm" });
+      sendAudio(blob);
+    };
+    mediaRecorder.start();
+    isRecording = true;
+    setState("recording");
+  } catch (err) {
+    showToast("Microphone access denied.");
+  }
+}
+
+function stopRecording() {
+  if (mediaRecorder && isRecording) {
+    mediaRecorder.stop();
+    isRecording = false;
+  }
+}
+
+document.getElementById("micBtn").addEventListener("click", (e) => {
+  e.target.closest(".round-btn").classList.toggle("active");
+  if (isRecording) stopRecording();
+  else startRecording();
+});
+</script>
+</body>
+</html>
