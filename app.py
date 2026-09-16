@@ -15,6 +15,7 @@ the PC through the sync endpoint, never the other way around.
 import base64
 import json
 import os
+import threading
 import time
 import uuid
 
@@ -91,18 +92,25 @@ so. If it reports the PC is offline, tell Danny plainly.
 
 
 def _load_state():
+    state = {"pending_sync": [], "recent_context": [], "pc_events": []}
     if os.path.exists(STATE_PATH):
         try:
             with open(STATE_PATH, "r", encoding="utf-8") as handle:
-                return json.load(handle)
+                state.update(json.load(handle))
         except Exception:
             pass
-    return {"pending_sync": [], "recent_context": []}
+    return state
 
 
 def _save_state(state):
     with open(STATE_PATH, "w", encoding="utf-8") as handle:
         json.dump(state, handle, ensure_ascii=False, indent=2)
+
+
+# Guards read-modify-write access to state.json -- the PC can push a
+# pc_said event at the same moment the phone is mid-conversation, and
+# without this a fast enough race could silently drop one write.
+_state_lock = threading.Lock()
 
 
 def _require_auth():
@@ -322,6 +330,102 @@ def api_sync():
     state["pending_sync"] = []
     _save_state(state)
     return jsonify({"pending": pending})
+
+
+@app.route("/api/speak_text", methods=["POST"])
+def api_speak_text():
+    """
+    Synthesize speech for a literal piece of text with no OpenAI call at
+    all -- used for pc_events, which are already-final text Jarvis said
+    on the PC. Kept separate from /api/message deliberately: those
+    events shouldn't get "replied to" by the conversational brain, just
+    spoken verbatim, and only ever synthesized on demand when a phone
+    is actually there to hear it, not the instant the PC says it.
+    """
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    payload = request.get_json(silent=True) or {}
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return jsonify({"error": "empty text"}), 400
+
+    try:
+        audio_bytes = _synthesize_speech(text)
+    except Exception as error:
+        return jsonify({"error": f"TTS failed: {error}"}), 502
+
+    return jsonify({
+        "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+        "audio_mime": "audio/mpeg",
+    })
+
+
+@app.route("/api/pc_said", methods=["POST"])
+def api_pc_said():
+    """
+    The PC pushes here every time Jarvis says ANYTHING (see the
+    _relay_speech_to_phone hook on say() in Jarvis_FINAL_WORKING.py) --
+    not just replies to something the phone asked. This is what lets
+    the phone hear self-repair progress, reassurance check-ins, and
+    routine completions that happen entirely on their own on the PC.
+    """
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    payload = request.get_json(silent=True) or {}
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return jsonify({"error": "empty text"}), 400
+
+    with _state_lock:
+        state = _load_state()
+        state["pc_events"].append({
+            "id": uuid.uuid4().hex,
+            "timestamp": time.time(),
+            "text": text,
+        })
+        # Bounded so this can never grow unbounded if the phone app
+        # isn't open to drain it for a long stretch.
+        state["pc_events"] = state["pc_events"][-100:]
+        _save_state(state)
+
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/pc_events", methods=["GET"])
+def api_pc_events():
+    """
+    The phone polls this every couple of seconds. `since` is the id of
+    the last event it already has (or empty, for a first call); returns
+    only events after that point so nothing gets spoken twice.
+    """
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    since = request.args.get("since", "")
+    with _state_lock:
+        state = _load_state()
+        events = state["pc_events"]
+
+    if not since:
+        # First call from a fresh page load -- don't dump potentially
+        # minutes of backlog at once, just start listening from now.
+        return jsonify({"events": [], "last_id": events[-1]["id"] if events else ""})
+
+    ids = [e["id"] for e in events]
+    if since in ids:
+        new_events = events[ids.index(since) + 1:]
+    else:
+        # The since id aged out of the last 100 -- just resume from now
+        # rather than guessing how far back to go.
+        new_events = []
+
+    last_id = new_events[-1]["id"] if new_events else since
+    return jsonify({"events": new_events, "last_id": last_id})
 
 
 @app.route("/api/health", methods=["GET"])

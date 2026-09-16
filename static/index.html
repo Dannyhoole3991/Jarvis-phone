@@ -262,6 +262,79 @@ async function pollPcStatus() {
 pollPcStatus();
 setInterval(pollPcStatus, 15000);
 
+// ---- PC events: anything Jarvis says on the PC on its own (self-repair
+// progress, reassurance check-ins, routine completions) -- not just
+// replies to messages this phone sent. Queued and played one at a time,
+// never interrupting whatever the phone itself is already doing. ----
+function isOrbBusy() {
+  return orbOuter.classList.contains("thinking") || orbOuter.classList.contains("speaking") || orbOuter.classList.contains("recording");
+}
+
+let lastEventId = localStorage.getItem("jarvisLastEventId") || "";
+const pcEventQueue = [];
+let drainingQueue = false;
+
+async function pollPcEvents() {
+  try {
+    const res = await fetch("/api/pc_events?since=" + encodeURIComponent(lastEventId), {
+      headers: { "Authorization": "Bearer " + getSecret() },
+    });
+    const data = await res.json();
+    if (data.last_id) {
+      lastEventId = data.last_id;
+      localStorage.setItem("jarvisLastEventId", lastEventId);
+    }
+    for (const event of (data.events || [])) {
+      pcEventQueue.push(event.text);
+    }
+    drainPcEventQueue();
+  } catch (err) {
+    // Offline or PC not reachable -- just try again next tick.
+  }
+}
+
+async function drainPcEventQueue() {
+  if (drainingQueue) return;
+  drainingQueue = true;
+  try {
+    while (pcEventQueue.length > 0) {
+      // Wait for the phone's own conversation (if any) to finish first --
+      // this never talks over something the user is actively doing.
+      while (isOrbBusy()) {
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      const text = pcEventQueue.shift();
+      await speakPcEvent(text);
+    }
+  } finally {
+    drainingQueue = false;
+  }
+}
+
+async function speakPcEvent(text) {
+  setState("speaking");
+  try {
+    const res = await fetch("/api/speak_text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getSecret() },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json();
+    if (data.audio_base64) {
+      await new Promise((resolve) => {
+        player.src = "data:" + data.audio_mime + ";base64," + data.audio_base64;
+        player.onended = resolve;
+        player.play().catch(resolve);
+      });
+    }
+  } catch (err) {
+    // Skip this one and move on rather than getting the queue stuck.
+  }
+  setState(null);
+}
+
+setInterval(pollPcEvents, 2500);
+
 // ---- Sending messages ----
 async function sendText(text) {
   if (!text.trim()) return;
