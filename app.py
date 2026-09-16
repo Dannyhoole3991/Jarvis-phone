@@ -36,6 +36,12 @@ ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "xru6qZB94sJdkyqP12q
 ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
 ELEVENLABS_SPEED = float(os.environ.get("ELEVENLABS_SPEED", "1.15"))
 OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+# Danny's real PC, reachable over Tailscale when it's on. This brain
+# never tries to reproduce Jarvis's actual PC-control logic (routing,
+# learned routines, the agentic execution pipeline) -- it just forwards
+# the raw request to the one place that already knows how to do all of
+# that, and relays back whatever the PC actually said/did.
+PC_JARVIS_URL = os.environ.get("PC_JARVIS_URL", "http://100.126.146.69:8765")
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -67,11 +73,20 @@ checklist or a multi-step plan unless asked. Do not repeatedly ask "what
 would you like to do next?".
 
 CONTEXT
-You are currently reachable only by phone, away from Danny's PC -- you
-have no access to his computer, files, or apps from here. If he asks for
-something that needs the PC (opening an app, controlling something on
-screen), say so plainly and let him know it'll be there for you once
-you're both back at the PC, rather than pretending to do it.
+You are Jarvis talking to Danny by phone. You have a tool, run_on_pc,
+that sends a request straight to your real body -- his actual Windows
+PC -- the only place that can actually open apps, launch games,
+control anything, or know any real fact about the PC's current state
+(what time its clock shows, what's running, what files exist, whether
+an app is open). You have NO other way to know any of that from here --
+you are not physically at the PC. Call run_on_pc for ANY request to DO
+something on the computer, AND for any question whose true answer
+depends on the PC's actual state. For example "what time is it [on the
+PC]", "is Steam open", "what's on my screen" all require calling
+run_on_pc -- do not guess or invent an answer to those from general
+knowledge, even one that sounds plausible. Only state a PC-specific
+fact, or claim something was done, when run_on_pc's actual result says
+so. If it reports the PC is offline, tell Danny plainly.
 """
 
 
@@ -111,20 +126,107 @@ def _transcribe_audio(audio_bytes, filename):
     return response.json().get("text", "").strip()
 
 
+RUN_ON_PC_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "run_on_pc",
+        "description": (
+            "Send a request straight to Danny's real Windows PC -- the only "
+            "place that can actually open apps, launch games, or control "
+            "anything. Use this for ANY request to DO something on the "
+            "computer, exactly as he'd say it directly, e.g. 'open steam "
+            "and play grand theft auto v'. Don't try to work out how to do "
+            "it yourself here -- the PC already knows how."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The task, phrased plainly, as Danny would say it.",
+                }
+            },
+            "required": ["command"],
+        },
+    },
+}
+
+
+def _is_pc_online():
+    try:
+        response = requests.get(f"{PC_JARVIS_URL}/status", timeout=3)
+        return response.status_code == 200
+    except requests.exceptions.RequestException:
+        return False
+
+
+def _run_on_pc(command):
+    """
+    Forward a task verbatim to the real Jarvis engine over Tailscale --
+    the exact same /command endpoint the existing phone app already
+    uses. Never reasons about the task itself; just relays it and
+    returns whatever the PC actually said or did.
+    """
+    try:
+        response = requests.post(
+            f"{PC_JARVIS_URL}/command",
+            json={"command": command},
+            timeout=65,  # just past the PC's own 60s reply timeout
+        )
+        if response.status_code != 200:
+            return "(The PC is offline or unreachable right now.)"
+        data = response.json()
+        return data.get("reply") or data.get("error") or "(No reply from the PC.)"
+    except requests.exceptions.RequestException:
+        return "(The PC is offline or unreachable right now.)"
+
+
 def _ask_openai(user_text, recent_context):
     messages = [{"role": "system", "content": JARVIS_PERSONALITY}]
     for turn in recent_context[-10:]:
         messages.append({"role": turn["role"], "content": turn["content"]})
     messages.append({"role": "user", "content": user_text})
 
-    response = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-        json={"model": OPENAI_CHAT_MODEL, "messages": messages, "temperature": 0.8},
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"].strip()
+    # Bounded loop: normally at most one tool call, but this allows a
+    # second round in case the model wants to check something else.
+    for _ in range(3):
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": OPENAI_CHAT_MODEL,
+                "messages": messages,
+                # Lower than a typical chat temperature -- measured live
+                # that 0.8 let the model skip calling run_on_pc and just
+                # invent a plausible-sounding (wrong) PC fact instead,
+                # inconsistently. Reliability on "did it actually check
+                # the PC" matters more here than conversational variety.
+                "temperature": 0.3,
+                "tools": [RUN_ON_PC_TOOL],
+            },
+            timeout=70,
+        )
+        response.raise_for_status()
+        message = response.json()["choices"][0]["message"]
+        tool_calls = message.get("tool_calls")
+
+        if not tool_calls:
+            return (message.get("content") or "").strip()
+
+        messages.append(message)
+        for call in tool_calls:
+            try:
+                args = json.loads(call["function"]["arguments"])
+            except Exception:
+                args = {}
+            result = _run_on_pc(str(args.get("command", "")).strip())
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call["id"],
+                "content": result,
+            })
+
+    return "Sorry sir, that got a bit tangled talking to the PC. Try again in a moment?"
 
 
 def _synthesize_speech(text):
@@ -225,6 +327,16 @@ def api_sync():
 @app.route("/api/health", methods=["GET"])
 def api_health():
     return jsonify({"status": "ok"})
+
+
+@app.route("/api/pc_status", methods=["GET"])
+def api_pc_status():
+    """Lightweight check the frontend can poll to show a plain 'Main PC
+    online/offline' indicator, without needing a full message round-trip."""
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+    return jsonify({"pc_online": _is_pc_online()})
 
 
 if __name__ == "__main__":

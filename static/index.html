@@ -38,6 +38,13 @@
     border:1px solid rgba(120,200,255,0.2); z-index:5;
   }
 
+  .pc-status {
+    position:absolute; top:calc(20px + env(safe-area-inset-top)); left:16px;
+    font-size:11px; color: var(--text-dim); display:flex; align-items:center; gap:6px; z-index:5;
+  }
+  .pc-status .dot { width:7px; height:7px; border-radius:50%; background: rgba(255,255,255,0.25); }
+  .pc-status.online .dot { background: #35e08a; box-shadow: 0 0 5px #35e08a; }
+
   /* ---------- The orb ---------- */
   .orb-outer {
     position:relative; width:160px; height:160px;
@@ -171,6 +178,7 @@
 
 <div class="wrap">
   <div class="settings-btn" id="settingsBtn" title="Change access key">&#9881;</div>
+  <div class="pc-status" id="pcStatus"><span class="dot"></span><span id="pcStatusText">Main PC offline</span></div>
 
   <div class="orb-outer" id="orbOuter">
     <div class="orb-ring"></div>
@@ -236,6 +244,23 @@ document.getElementById("settingsBtn").addEventListener("click", () => {
   setupOverlay.hidden = false;
 });
 if (!getSecret()) setupOverlay.hidden = false;
+
+// ---- Main PC online/offline indicator ----
+const pcStatusEl = document.getElementById("pcStatus");
+const pcStatusText = document.getElementById("pcStatusText");
+async function pollPcStatus() {
+  try {
+    const res = await fetch("/api/pc_status", { headers: { "Authorization": "Bearer " + getSecret() } });
+    const data = await res.json();
+    pcStatusEl.classList.toggle("online", !!data.pc_online);
+    pcStatusText.textContent = data.pc_online ? "Main PC online" : "Main PC offline";
+  } catch (err) {
+    pcStatusEl.classList.remove("online");
+    pcStatusText.textContent = "Main PC offline";
+  }
+}
+pollPcStatus();
+setInterval(pollPcStatus, 15000);
 
 // ---- Sending messages ----
 async function sendText(text) {
