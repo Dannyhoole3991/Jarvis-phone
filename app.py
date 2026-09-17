@@ -104,6 +104,7 @@ def _load_state():
         "command_results": {},
         "pc_last_seen": 0,
         "start_requested": False,
+        "code_events": [],
     }
     if os.path.exists(STATE_PATH):
         try:
@@ -531,6 +532,12 @@ def api_pc_command_result():
     with _state_lock:
         state = _load_state()
         state["command_results"][command_id] = str(payload.get("reply", ""))
+        # Code-mode messages (see /api/code_message) are fire-and-forget
+        # from the phone's side -- nothing ever reads their result back
+        # out of this dict, so without a cap it would grow by one entry
+        # per code-mode message for as long as a session runs.
+        if len(state["command_results"]) > 200:
+            state["command_results"] = dict(list(state["command_results"].items())[-200:])
         _save_state(state)
 
     return jsonify({"status": "ok"})
@@ -555,6 +562,106 @@ def api_launcher_poll():
         _save_state(state)
 
     return jsonify({"start_requested": requested})
+
+
+@app.route("/api/code_message", methods=["POST"])
+def api_code_message():
+    """
+    The phone's "code mode" screen sends typed replies here while a
+    Jarvis Code session is active. Deliberately reuses the exact same
+    pending_commands queue /api/pc_poll already serves -- Jarvis's main
+    loop already knows to route anything it receives straight into the
+    active code session (or handle an exit phrase) once one is running,
+    so no separate PC-side polling is needed for this at all.
+
+    Fire-and-forget: unlike run_on_pc, this never waits for a reply
+    here. A code session's actual output arrives continuously through
+    the separate /api/code_events feed as the model streams it, not as
+    one bounded response to a single message.
+    """
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    payload = request.get_json(silent=True) or {}
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return jsonify({"error": "empty text"}), 400
+
+    with _state_lock:
+        state = _load_state()
+        state["pending_commands"].append({"id": uuid.uuid4().hex, "command": text})
+        _save_state(state)
+
+    return jsonify({"status": "queued"})
+
+
+@app.route("/api/code_said", methods=["POST"])
+def api_code_said():
+    """
+    The PC pushes here for the active Jarvis Code session -- either a
+    chunk of transcript text, or a mode change (a session just started
+    or ended, possibly triggered by voice at the PC rather than the
+    phone). Kept entirely separate from /api/pc_said: this is meant to
+    be displayed as a scrolling chat log, never spoken aloud.
+    """
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    payload = request.get_json(silent=True) or {}
+    event_type = str(payload.get("type", "")).strip()
+    if event_type not in ("text", "mode"):
+        return jsonify({"error": "invalid type"}), 400
+
+    event = {"id": uuid.uuid4().hex, "timestamp": time.time(), "type": event_type}
+    if event_type == "text":
+        text = str(payload.get("text", "")).strip()
+        if not text:
+            return jsonify({"error": "empty text"}), 400
+        event["text"] = text
+    else:
+        mode = str(payload.get("mode", "")).strip()
+        if mode not in ("start", "end"):
+            return jsonify({"error": "invalid mode"}), 400
+        event["mode"] = mode
+
+    with _state_lock:
+        state = _load_state()
+        state["code_events"].append(event)
+        # A code session's transcript is worth keeping a bit more
+        # history than pc_events -- capped so it still can't grow
+        # unbounded if the phone isn't open to drain it.
+        state["code_events"] = state["code_events"][-300:]
+        _save_state(state)
+
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/code_events", methods=["GET"])
+def api_code_events():
+    """Same incremental since-cursor polling as /api/pc_events, for the
+    Jarvis Code transcript feed instead of spoken events."""
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    since = request.args.get("since", "")
+    with _state_lock:
+        state = _load_state()
+        events = state["code_events"]
+
+    if not since:
+        return jsonify({"events": [], "last_id": events[-1]["id"] if events else ""})
+
+    ids = [e["id"] for e in events]
+    if since in ids:
+        new_events = events[ids.index(since) + 1:]
+    else:
+        new_events = []
+
+    last_id = new_events[-1]["id"] if new_events else since
+    return jsonify({"events": new_events, "last_id": last_id})
 
 
 if __name__ == "__main__":

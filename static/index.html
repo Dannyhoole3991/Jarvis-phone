@@ -30,6 +30,7 @@
     padding: 0 20px;
     box-sizing: border-box;
   }
+  .wrap[hidden] { display:none; }
 
   .settings-btn {
     position:absolute; top:calc(14px + env(safe-area-inset-top)); right:16px;
@@ -172,6 +173,44 @@
     padding:10px 20px; color:var(--text); font-size:14px; cursor:pointer;
   }
   .setup-overlay p { color: var(--text-dim); font-size:13px; text-align:center; max-width:300px; }
+
+  /* ---------- Code mode: a landscape-friendly text chat with the
+     active Jarvis Code session, as a fallback for fixing/building
+     things on the PC when Danny isn't at it. Text only, never spoken. ---------- */
+  .code-screen {
+    position:fixed; inset:0; background:#000; z-index:15;
+    display:flex; flex-direction:column;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    box-sizing:border-box;
+  }
+  .code-screen[hidden] { display:none; }
+  .code-header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:10px 14px; border-bottom:1px solid rgba(120,200,255,0.18);
+    font-size:12.5px; color:var(--text-dim); letter-spacing:0.5px; flex-shrink:0;
+  }
+  .code-header .dot { width:7px; height:7px; border-radius:50%; background:#35e08a; box-shadow:0 0 5px #35e08a; margin-right:6px; }
+  .exit-code-btn {
+    background: rgba(255,106,106,0.14); border:1px solid rgba(255,106,106,0.35); color:var(--red);
+    border-radius:8px; padding:5px 12px; font-size:12px; cursor:pointer;
+  }
+  .code-log {
+    flex:1; overflow-y:auto; padding:12px 14px; font-size:13px; line-height:1.5;
+    font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+    white-space:pre-wrap; word-break:break-word;
+  }
+  .code-line { margin-bottom:10px; color:var(--text); }
+  .code-line.user { color:var(--cyan); }
+  .code-line.tool { color:var(--text-dim); font-style:italic; }
+  .code-input-row {
+    display:flex; align-items:center; gap:8px; padding:10px 14px;
+    border-top:1px solid rgba(120,200,255,0.18); flex-shrink:0;
+  }
+  .code-input-row input {
+    flex:1; background: rgba(255,255,255,0.06); border:1px solid rgba(120,200,255,0.22);
+    border-radius:20px; padding:10px 16px; color:var(--text); font-size:14px; outline:none; min-width:0;
+  }
+  .code-input-row input::placeholder { color: rgba(220,240,255,0.4); }
 </style>
 </head>
 <body>
@@ -201,6 +240,18 @@
   <div class="control-row">
     <div class="round-btn mic" id="micBtn" title="Hold to talk">&#127908;</div>
     <div class="round-btn stop" id="stopBtn" title="Stop">&#9632;</div>
+  </div>
+</div>
+
+<div class="code-screen" id="codeScreen" hidden>
+  <div class="code-header">
+    <span><span class="dot"></span>Jarvis Code</span>
+    <button class="exit-code-btn" id="exitCodeBtn">Exit</button>
+  </div>
+  <div class="code-log" id="codeLog"></div>
+  <div class="code-input-row">
+    <input id="codeInput" type="text" placeholder="Reply to Jarvis..." autocapitalize="off" />
+    <div class="round-btn" id="codeSendBtn" title="Send">&#10148;</div>
   </div>
 </div>
 
@@ -365,6 +416,105 @@ async function speakPcEvent(text) {
 }
 
 setInterval(pollPcEvents, 2500);
+
+// ---- Code mode: a landscape-friendly text chat with the active Jarvis
+// Code session, as a fallback for fixing/building things on the PC
+// when Danny isn't physically there. Always polling (not just while
+// this screen is showing) so it can react even when the session was
+// started by voice at the PC rather than from the phone. ----
+const wrapEl = document.querySelector(".wrap");
+const codeScreen = document.getElementById("codeScreen");
+const codeLog = document.getElementById("codeLog");
+const codeInput = document.getElementById("codeInput");
+let codeModeActive = false;
+let codeLastEventId = localStorage.getItem("jarvisCodeLastEventId") || "";
+
+function appendCodeLine(text) {
+  const line = document.createElement("div");
+  line.className = "code-line";
+  if (text.startsWith("> ")) line.classList.add("user");
+  else if (text.startsWith("[working:")) line.classList.add("tool");
+  line.textContent = text;
+  codeLog.appendChild(line);
+  codeLog.scrollTop = codeLog.scrollHeight;
+}
+
+function enterCodeMode() {
+  if (codeModeActive) return;
+  codeModeActive = true;
+  wrapEl.hidden = true;
+  codeScreen.hidden = false;
+  // Best-effort only -- iOS Safari doesn't support locking orientation
+  // from a web page at all, so this silently does nothing there and
+  // the layout just has to work fine in portrait too. Where it IS
+  // supported, it saves Danny from having to rotate manually.
+  try { screen.orientation && screen.orientation.lock && screen.orientation.lock("landscape").catch(() => {}); } catch (err) {}
+  codeInput.focus();
+}
+
+function exitCodeModeUI() {
+  if (!codeModeActive) return;
+  codeModeActive = false;
+  codeScreen.hidden = true;
+  wrapEl.hidden = false;
+  try { screen.orientation && screen.orientation.unlock && screen.orientation.unlock(); } catch (err) {}
+}
+
+async function pollCodeEvents() {
+  try {
+    const res = await fetch("/api/code_events?since=" + encodeURIComponent(codeLastEventId), {
+      headers: { "Authorization": "Bearer " + getSecret() },
+    });
+    const data = await res.json();
+    if (data.last_id) {
+      codeLastEventId = data.last_id;
+      localStorage.setItem("jarvisCodeLastEventId", codeLastEventId);
+    }
+    for (const event of (data.events || [])) {
+      if (event.type === "mode") {
+        if (event.mode === "start") enterCodeMode();
+        else if (event.mode === "end") exitCodeModeUI();
+      } else if (event.type === "text") {
+        appendCodeLine(event.text);
+      }
+    }
+  } catch (err) {
+    // Try again next tick.
+  }
+}
+setInterval(pollCodeEvents, 2000);
+
+async function sendCodeText() {
+  const text = codeInput.value.trim();
+  if (!text) return;
+  codeInput.value = "";
+  // No local echo -- the PC relays every turn (its own and Danny's)
+  // back through the same feed, so the log stays the single source of
+  // truth regardless of whether voice at the PC or the phone drives it.
+  try {
+    await fetch("/api/code_message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getSecret() },
+      body: JSON.stringify({ text }),
+    });
+  } catch (err) {
+    showToast("Couldn't reach Jarvis.");
+  }
+}
+document.getElementById("codeSendBtn").addEventListener("click", sendCodeText);
+codeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") sendCodeText(); });
+
+document.getElementById("exitCodeBtn").addEventListener("click", () => {
+  // Exit immediately here for responsiveness; the PC's own mode:end
+  // event (sent once it actually closes the session) will confirm it
+  // shortly after regardless.
+  exitCodeModeUI();
+  fetch("/api/code_message", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getSecret() },
+    body: JSON.stringify({ text: "exit code mode" }),
+  }).catch(() => {});
+});
 
 // ---- Sending messages ----
 async function sendText(text) {
