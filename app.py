@@ -184,6 +184,7 @@ def _run_on_pc(command):
         response = requests.post(
             f"{PC_JARVIS_URL}/command",
             json={"command": command},
+            headers={"Authorization": f"Bearer {SHARED_SECRET}"},
             timeout=65,  # just past the PC's own 60s reply timeout
         )
         if response.status_code != 200:
