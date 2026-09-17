@@ -279,12 +279,11 @@ startPcBtn.addEventListener("click", async () => {
     const data = await res.json();
     if (data.error) {
       showToast(data.error);
-    } else if (data.status === "already_running") {
-      showToast("Jarvis is already running, sir.");
-      pollPcStatus();
     } else {
-      showToast("Starting Jarvis on your PC...");
-      setTimeout(pollPcStatus, 6000);
+      // The launcher picks this up on its next poll (a few seconds),
+      // not instantly -- it can't be called directly from here.
+      showToast("Requested, sir -- starting shortly if the PC's on.");
+      setTimeout(pollPcStatus, 10000);
     }
   } catch (err) {
     showToast("Couldn't reach the phone backend to start the PC.");

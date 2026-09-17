@@ -37,17 +37,16 @@ ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "xru6qZB94sJdkyqP12q
 ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
 ELEVENLABS_SPEED = float(os.environ.get("ELEVENLABS_SPEED", "1.15"))
 OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
-# Danny's real PC, reachable over Tailscale when it's on. This brain
-# never tries to reproduce Jarvis's actual PC-control logic (routing,
-# learned routines, the agentic execution pipeline) -- it just forwards
-# the raw request to the one place that already knows how to do all of
-# that, and relays back whatever the PC actually said/did.
-PC_JARVIS_URL = os.environ.get("PC_JARVIS_URL", "http://100.126.146.69:8765")
-# A second, tiny always-on listener on the PC (see jarvis_launcher.py),
-# separate from Jarvis itself, whose only job is starting Jarvis on
-# request -- needed because if Jarvis is what's not running, nothing
-# inside Jarvis can answer a "start me" request.
-PC_LAUNCHER_URL = os.environ.get("PC_LAUNCHER_URL", "http://100.126.146.69:8766")
+# Danny's PC lives on a private Tailscale address that this backend,
+# running on Render, has no route to -- Render was never on that
+# tailnet, and Tailscale Funnel (which would fix that) turned out to
+# need a paid plan. So this never calls the PC directly. Instead the
+# PC and its launcher (jarvis_launcher.py) poll THIS backend every few
+# seconds (see /api/pc_poll and /api/launcher_poll below), the same
+# "poll and push" shape already used for pc_events. This brain still
+# never reproduces Jarvis's actual PC-control logic; it just queues the
+# raw request for the PC to run and relays back whatever it said/did.
+PC_ONLINE_THRESHOLD_SECONDS = 12  # the PC polls roughly every 3s
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -97,7 +96,15 @@ so. If it reports the PC is offline, tell Danny plainly.
 
 
 def _load_state():
-    state = {"pending_sync": [], "recent_context": [], "pc_events": []}
+    state = {
+        "pending_sync": [],
+        "recent_context": [],
+        "pc_events": [],
+        "pending_commands": [],
+        "command_results": {},
+        "pc_last_seen": 0,
+        "start_requested": False,
+    }
     if os.path.exists(STATE_PATH):
         try:
             with open(STATE_PATH, "r", encoding="utf-8") as handle:
@@ -166,33 +173,39 @@ RUN_ON_PC_TOOL = {
 
 
 def _is_pc_online():
-    try:
-        response = requests.get(f"{PC_JARVIS_URL}/status", timeout=3)
-        return response.status_code == 200
-    except requests.exceptions.RequestException:
-        return False
+    with _state_lock:
+        state = _load_state()
+        last_seen = state.get("pc_last_seen", 0)
+    return (time.time() - last_seen) < PC_ONLINE_THRESHOLD_SECONDS
 
 
 def _run_on_pc(command):
     """
-    Forward a task verbatim to the real Jarvis engine over Tailscale --
-    the exact same /command endpoint the existing phone app already
-    uses. Never reasons about the task itself; just relays it and
-    returns whatever the PC actually said or did.
+    Queue a task for the PC to pick up on its next poll (see
+    /api/pc_poll) and wait here for the result to land in
+    /api/pc_command_result. Never reasons about the task itself; just
+    relays it and returns whatever the PC actually said or did.
     """
-    try:
-        response = requests.post(
-            f"{PC_JARVIS_URL}/command",
-            json={"command": command},
-            headers={"Authorization": f"Bearer {SHARED_SECRET}"},
-            timeout=65,  # just past the PC's own 60s reply timeout
-        )
-        if response.status_code != 200:
-            return "(The PC is offline or unreachable right now.)"
-        data = response.json()
-        return data.get("reply") or data.get("error") or "(No reply from the PC.)"
-    except requests.exceptions.RequestException:
+    if not _is_pc_online():
         return "(The PC is offline or unreachable right now.)"
+
+    command_id = uuid.uuid4().hex
+    with _state_lock:
+        state = _load_state()
+        state["pending_commands"].append({"id": command_id, "command": command})
+        _save_state(state)
+
+    deadline = time.time() + 45  # a bit under the phone's own 70s OpenAI timeout
+    while time.time() < deadline:
+        time.sleep(1)
+        with _state_lock:
+            state = _load_state()
+            if command_id in state["command_results"]:
+                reply = state["command_results"].pop(command_id)
+                _save_state(state)
+                return reply
+
+    return "(The PC took too long to reply.)"
 
 
 def _ask_openai(user_text, recent_context):
@@ -455,27 +468,88 @@ def api_pc_status():
 @app.route("/api/start_pc", methods=["POST"])
 def api_start_pc():
     """
-    Tell the PC's launcher (jarvis_launcher.py, a separate always-on
-    listener) to start the real Jarvis engine. Only works if the PC
-    itself is on/reachable -- this does not power the machine on.
-    For now it always starts the terminal version; the desktop HUD
-    version will be added later.
+    Flags a start request for the PC's launcher (jarvis_launcher.py) to
+    pick up on its next poll (see /api/launcher_poll) -- can't call the
+    launcher directly for the same reason /api/pc_poll exists: this
+    backend has no route to the PC's private Tailscale address. Only
+    works if the PC itself is on/reachable; this does not power the
+    machine on. For now it always starts the terminal version; the
+    desktop HUD version will be added later.
     """
     auth_error = _require_auth()
     if auth_error:
         return auth_error
 
-    try:
-        response = requests.post(
-            f"{PC_LAUNCHER_URL}/start",
-            headers={"Authorization": f"Bearer {SHARED_SECRET}"},
-            timeout=5,
-        )
-        if response.status_code != 200:
-            return jsonify({"error": "launcher reachable but refused the request"}), 502
-        return jsonify(response.json())
-    except requests.exceptions.RequestException:
-        return jsonify({"error": "The PC isn't reachable right now -- it may be fully off or asleep."}), 502
+    with _state_lock:
+        state = _load_state()
+        state["start_requested"] = True
+        _save_state(state)
+
+    return jsonify({"status": "requested"})
+
+
+@app.route("/api/pc_poll", methods=["POST"])
+def api_pc_poll():
+    """
+    Jarvis's own engine calls this every few seconds -- both a
+    heartbeat (so /api/pc_status knows it's alive) and how it picks up
+    anything queued for it by run_on_pc, since this backend can't reach
+    the PC directly over its private Tailscale address. Fetch-and-clear:
+    once handed out, a command isn't handed out again on the next poll.
+    """
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    with _state_lock:
+        state = _load_state()
+        state["pc_last_seen"] = time.time()
+        pending = state["pending_commands"]
+        state["pending_commands"] = []
+        _save_state(state)
+
+    return jsonify({"pending_commands": pending})
+
+
+@app.route("/api/pc_command_result", methods=["POST"])
+def api_pc_command_result():
+    """The PC posts back here once it's actually run a task /api/pc_poll handed it."""
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    payload = request.get_json(silent=True) or {}
+    command_id = str(payload.get("id", "")).strip()
+    if not command_id:
+        return jsonify({"error": "missing id"}), 400
+
+    with _state_lock:
+        state = _load_state()
+        state["command_results"][command_id] = str(payload.get("reply", ""))
+        _save_state(state)
+
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/launcher_poll", methods=["POST"])
+def api_launcher_poll():
+    """
+    jarvis_launcher.py (a separate always-on listener on the PC) polls
+    this to see if a start was requested via /api/start_pc -- same
+    reasoning as pc_poll, just for starting Jarvis instead of running a
+    command on it. Fetch-and-clear so it's only acted on once.
+    """
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    with _state_lock:
+        state = _load_state()
+        requested = state.get("start_requested", False)
+        state["start_requested"] = False
+        _save_state(state)
+
+    return jsonify({"start_requested": requested})
 
 
 if __name__ == "__main__":
