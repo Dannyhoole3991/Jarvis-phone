@@ -359,6 +359,9 @@ def api_speak_text():
 
     try:
         audio_bytes = _synthesize_speech(text)
+    except requests.exceptions.HTTPError as error:
+        detail = error.response.text if error.response is not None else str(error)
+        return jsonify({"error": f"TTS failed: {error}", "detail": detail}), 502
     except Exception as error:
         return jsonify({"error": f"TTS failed: {error}"}), 502
 
