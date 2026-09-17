@@ -242,11 +242,16 @@ def _ask_openai(user_text, recent_context):
 
         messages.append(message)
         for call in tool_calls:
-            try:
-                args = json.loads(call["function"]["arguments"])
-            except Exception:
-                args = {}
-            result = _run_on_pc(str(args.get("command", "")).strip())
+            # Deliberately ignore whatever "command" argument the model
+            # generated and send Danny's actual words instead -- found
+            # live that for an unusual/compound instruction ("open code
+            # and find out why we can't close jarvis remotely"), the
+            # model doesn't always reproduce it verbatim like the tool
+            # description asks; it can paraphrase or garble it (one
+            # real case collapsed to just "open close"). The PC's own
+            # command handling already parses natural phrasing fine, so
+            # there's no reason to let the model rewrite it at all.
+            result = _run_on_pc(user_text)
             messages.append({
                 "role": "tool",
                 "tool_call_id": call["id"],
