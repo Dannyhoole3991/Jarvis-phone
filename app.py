@@ -157,7 +157,12 @@ RUN_ON_PC_TOOL = {
             "anything. Use this for ANY request to DO something on the "
             "computer, exactly as he'd say it directly, e.g. 'open steam "
             "and play grand theft auto v'. Don't try to work out how to do "
-            "it yourself here -- the PC already knows how."
+            "it yourself here -- the PC already knows how. This ALWAYS "
+            "includes phrases like 'let's switch to code', 'let's do this "
+            "in code', or 'switch to code' -- these start a real coding "
+            "session on the PC (Jarvis Code mode) and must be delegated "
+            "here verbatim, never answered conversationally or treated as "
+            "a request to just talk about code."
         ),
         "parameters": {
             "type": "object",
