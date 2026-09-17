@@ -5,22 +5,14 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app
+    # Only the three secrets need a value here -- everything else
+    # (voice id/model/speed, chat model, and the PC's Tailscale URLs)
+    # already has a working default baked into app.py, so leaving them
+    # unset on Render just uses those defaults.
     envVars:
       - key: JARVIS_PHONE_SECRET
         sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: ELEVENLABS_API_KEY
-        sync: false
-      - key: ELEVENLABS_VOICE_ID
-        sync: false
-      - key: ELEVENLABS_MODEL
-        sync: false
-      - key: ELEVENLABS_SPEED
-        sync: false
-      - key: OPENAI_CHAT_MODEL
-        sync: false
-      - key: PC_JARVIS_URL
-        sync: false
-      - key: PC_LAUNCHER_URL
         sync: false
