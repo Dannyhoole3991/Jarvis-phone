@@ -4,7 +4,11 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    # Gunicorn's default 30s worker timeout is shorter than run_on_pc's
+    # own 45s wait for the PC to reply (see app.py) -- without raising
+    # this, gunicorn kills the worker mid-request and the client just
+    # sees a bare 500, found live while testing a real delegated task.
+    startCommand: gunicorn app:app --timeout 90
     # Only the three secrets need a value here -- everything else
     # (voice id/model/speed, chat model, and the PC's Tailscale URLs)
     # already has a working default baked into app.py, so leaving them
