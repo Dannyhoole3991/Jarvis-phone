@@ -43,6 +43,11 @@ OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
 # the raw request to the one place that already knows how to do all of
 # that, and relays back whatever the PC actually said/did.
 PC_JARVIS_URL = os.environ.get("PC_JARVIS_URL", "http://100.126.146.69:8765")
+# A second, tiny always-on listener on the PC (see jarvis_launcher.py),
+# separate from Jarvis itself, whose only job is starting Jarvis on
+# request -- needed because if Jarvis is what's not running, nothing
+# inside Jarvis can answer a "start me" request.
+PC_LAUNCHER_URL = os.environ.get("PC_LAUNCHER_URL", "http://100.126.146.69:8766")
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -441,6 +446,32 @@ def api_pc_status():
     if auth_error:
         return auth_error
     return jsonify({"pc_online": _is_pc_online()})
+
+
+@app.route("/api/start_pc", methods=["POST"])
+def api_start_pc():
+    """
+    Tell the PC's launcher (jarvis_launcher.py, a separate always-on
+    listener) to start the real Jarvis engine. Only works if the PC
+    itself is on/reachable -- this does not power the machine on.
+    For now it always starts the terminal version; the desktop HUD
+    version will be added later.
+    """
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    try:
+        response = requests.post(
+            f"{PC_LAUNCHER_URL}/start",
+            headers={"Authorization": f"Bearer {SHARED_SECRET}"},
+            timeout=5,
+        )
+        if response.status_code != 200:
+            return jsonify({"error": "launcher reachable but refused the request"}), 502
+        return jsonify(response.json())
+    except requests.exceptions.RequestException:
+        return jsonify({"error": "The PC isn't reachable right now -- it may be fully off or asleep."}), 502
 
 
 if __name__ == "__main__":

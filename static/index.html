@@ -44,6 +44,12 @@
   }
   .pc-status .dot { width:7px; height:7px; border-radius:50%; background: rgba(255,255,255,0.25); }
   .pc-status.online .dot { background: #35e08a; box-shadow: 0 0 5px #35e08a; }
+  .start-pc-btn {
+    margin-left:4px; font-size:10.5px; color: var(--cyan); background: rgba(52,229,255,0.12);
+    border:1px solid rgba(120,200,255,0.3); border-radius:8px; padding:2px 8px; cursor:pointer;
+  }
+  .start-pc-btn[hidden] { display:none; }
+  .start-pc-btn.busy { opacity:0.5; pointer-events:none; }
 
   /* ---------- The orb ---------- */
   .orb-outer {
@@ -178,7 +184,7 @@
 
 <div class="wrap">
   <div class="settings-btn" id="settingsBtn" title="Change access key">&#9881;</div>
-  <div class="pc-status" id="pcStatus"><span class="dot"></span><span id="pcStatusText">Main PC offline</span></div>
+  <div class="pc-status" id="pcStatus"><span class="dot"></span><span id="pcStatusText">Main PC offline</span><button class="start-pc-btn" id="startPcBtn" hidden>Start Jarvis</button></div>
 
   <div class="orb-outer" id="orbOuter">
     <div class="orb-ring"></div>
@@ -248,19 +254,45 @@ if (!getSecret()) setupOverlay.hidden = false;
 // ---- Main PC online/offline indicator ----
 const pcStatusEl = document.getElementById("pcStatus");
 const pcStatusText = document.getElementById("pcStatusText");
+const startPcBtn = document.getElementById("startPcBtn");
 async function pollPcStatus() {
   try {
     const res = await fetch("/api/pc_status", { headers: { "Authorization": "Bearer " + getSecret() } });
     const data = await res.json();
     pcStatusEl.classList.toggle("online", !!data.pc_online);
     pcStatusText.textContent = data.pc_online ? "Main PC online" : "Main PC offline";
+    startPcBtn.hidden = !!data.pc_online;
   } catch (err) {
     pcStatusEl.classList.remove("online");
     pcStatusText.textContent = "Main PC offline";
+    startPcBtn.hidden = false;
   }
 }
 pollPcStatus();
 setInterval(pollPcStatus, 15000);
+
+startPcBtn.addEventListener("click", async () => {
+  startPcBtn.classList.add("busy");
+  startPcBtn.textContent = "Starting...";
+  try {
+    const res = await fetch("/api/start_pc", { method: "POST", headers: { "Authorization": "Bearer " + getSecret() } });
+    const data = await res.json();
+    if (data.error) {
+      showToast(data.error);
+    } else if (data.status === "already_running") {
+      showToast("Jarvis is already running, sir.");
+      pollPcStatus();
+    } else {
+      showToast("Starting Jarvis on your PC...");
+      setTimeout(pollPcStatus, 6000);
+    }
+  } catch (err) {
+    showToast("Couldn't reach the phone backend to start the PC.");
+  } finally {
+    startPcBtn.classList.remove("busy");
+    startPcBtn.textContent = "Start Jarvis";
+  }
+});
 
 // ---- PC events: anything Jarvis says on the PC on its own (self-repair
 // progress, reassurance check-ins, routine completions) -- not just
