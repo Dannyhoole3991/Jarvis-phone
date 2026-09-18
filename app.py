@@ -188,6 +188,26 @@ RUN_ON_PC_TOOL = {
 }
 
 
+# Mirrors _CODE_MODE_TRIGGERS on the PC (Jarvis_FINAL_WORKING.py).
+# Deliberately checked BEFORE the AI model ever sees the message --
+# confirmed live, twice, with two different phrasings ("lets switch to
+# code" alone, and "lets switch to code to fix jarvis") that even an
+# explicit system-prompt instruction doesn't reliably make the model
+# call run_on_pc for this. Both times it answered with a convincing
+# fake "we're in code mode now" reply while nothing reached the PC at
+# all. This is too important to a repair fallback to leave to a
+# probabilistic judgment call, so it's a plain substring match instead.
+_CODE_MODE_TRIGGERS = (
+    "do this in code", "do that in code", "lets do this in code", "let's do this in code",
+    "switch to code", "lets switch to code", "let's switch to code",
+)
+
+
+def _looks_like_code_mode_request(text):
+    lowered = text.lower()
+    return any(trigger in lowered for trigger in _CODE_MODE_TRIGGERS)
+
+
 def _is_pc_online():
     with _state_lock:
         state = _load_state()
@@ -322,7 +342,10 @@ def api_message():
         return jsonify({"error": "empty message"}), 400
 
     try:
-        reply_text = _ask_openai(user_text, state["recent_context"])
+        if _looks_like_code_mode_request(user_text):
+            reply_text = _run_on_pc(user_text)
+        else:
+            reply_text = _ask_openai(user_text, state["recent_context"])
     except Exception as error:
         return jsonify({"error": f"AI reply failed: {error}"}), 502
 
