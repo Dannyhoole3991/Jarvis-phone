@@ -475,6 +475,15 @@ async function pollCodeEvents() {
         if (event.mode === "start") enterCodeMode();
         else if (event.mode === "end") exitCodeModeUI();
       } else if (event.type === "text") {
+        // The mode:start signal is a separate network call from the PC
+        // and confirmed live to sometimes not land even when the text
+        // relay itself succeeds -- without this, a missed signal meant
+        // real transcript text kept arriving and being appended to a
+        // screen nobody was seeing, with no visible sign anything had
+        // started. Real code-session text arriving is itself enough
+        // proof a session is active, so this doesn't need to wait on
+        // that separate signal to be trustworthy.
+        if (!codeModeActive) enterCodeMode();
         appendCodeLine(event.text);
       }
     }
