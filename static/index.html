@@ -6,12 +6,12 @@
 <title>Jarvis</title>
 <style>
   :root{
-    --cyan: #34e5ff;
-    --blue: #2f8dff;
-    --purple: #9b6bff;
+    --cyan: #ffb347;
+    --blue: #ff8c3d;
+    --purple: #ff8c3d;
     --red: #ff6a6a;
-    --text: #eafcff;
-    --text-dim: rgba(220, 240, 255, 0.6);
+    --text: #fff3e0;
+    --text-dim: rgba(255, 230, 200, 0.6);
   }
   html, body {
     margin:0; padding:0; width:100%; height:100%;
@@ -36,7 +36,7 @@
     position:absolute; top:calc(14px + env(safe-area-inset-top)); right:16px;
     width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center;
     color: var(--text-dim); font-size:14px; background: rgba(255,255,255,0.06);
-    border:1px solid rgba(120,200,255,0.2); z-index:5;
+    border:1px solid rgba(255,190,130,0.2); z-index:5;
   }
 
   .pc-status {
@@ -46,74 +46,16 @@
   .pc-status .dot { width:7px; height:7px; border-radius:50%; background: rgba(255,255,255,0.25); }
   .pc-status.online .dot { background: #35e08a; box-shadow: 0 0 5px #35e08a; }
   .start-pc-btn {
-    margin-left:4px; font-size:10.5px; color: var(--cyan); background: rgba(52,229,255,0.12);
-    border:1px solid rgba(120,200,255,0.3); border-radius:8px; padding:2px 8px; cursor:pointer;
+    margin-left:4px; font-size:10.5px; color: var(--cyan); background: rgba(255,179,71,0.12);
+    border:1px solid rgba(255,190,130,0.3); border-radius:8px; padding:2px 8px; cursor:pointer;
   }
   .start-pc-btn[hidden] { display:none; }
   .start-pc-btn.busy { opacity:0.5; pointer-events:none; }
 
-  /* ---------- The orb ---------- */
-  .orb-outer {
-    position:relative; width:160px; height:160px;
-    display:flex; align-items:center; justify-content:center;
-    z-index:2;
-  }
-  .orb-ring {
-    position:absolute; inset:0; border-radius:50%;
-    border:1.5px solid rgba(90,180,255,0.25);
-    animation: spin 14s linear infinite;
-  }
-  .orb-ring.outer2 { inset:-16px; border-color: rgba(155,107,255,0.16); animation-duration: 22s; animation-direction: reverse; }
-  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-
-  .orb {
-    width:110px; height:110px; border-radius:50%;
-    background: radial-gradient(circle at 38% 32%, #ffffff, var(--cyan) 42%, var(--blue) 78%, #12345f 100%);
-    box-shadow:
-      0 0 30px 6px rgba(52,229,255,0.45),
-      0 0 70px 18px rgba(52,229,255,0.15);
-    transition: transform 0.18s ease, box-shadow 0.18s ease;
-    animation: breathe 3.6s ease-in-out infinite;
-  }
-  @keyframes breathe {
-    0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.035); }
-  }
-
-  .orb-outer.thinking .orb {
-    animation: think 1.1s ease-in-out infinite;
-    background: radial-gradient(circle at 38% 32%, #ffffff, #c9a8ff 42%, var(--purple) 78%, #2a1a55 100%);
-    box-shadow: 0 0 30px 6px rgba(155,107,255,0.5), 0 0 70px 18px rgba(155,107,255,0.18);
-  }
-  @keyframes think {
-    0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.06); }
-  }
-
-  .orb-outer.speaking .orb {
-    animation: speak-a 0.62s ease-in-out infinite, speak-glow 0.9s ease-in-out infinite;
-  }
-  @keyframes speak-a {
-    0%   { transform: scale(1)    translateY(0); }
-    30%  { transform: scale(1.09) translateY(-1px); }
-    55%  { transform: scale(0.97) translateY(0.5px); }
-    80%  { transform: scale(1.05) translateY(-0.5px); }
-    100% { transform: scale(1)    translateY(0); }
-  }
-  @keyframes speak-glow {
-    0%, 100% { box-shadow: 0 0 30px 6px rgba(52,229,255,0.5), 0 0 70px 18px rgba(52,229,255,0.18); }
-    50%      { box-shadow: 0 0 42px 10px rgba(52,229,255,0.75), 0 0 90px 26px rgba(52,229,255,0.3); }
-  }
-
-  .orb-outer.recording .orb {
-    animation: record-pulse 0.9s ease-in-out infinite;
-    background: radial-gradient(circle at 38% 32%, #fff, #ff9d9d 42%, var(--red) 78%, #5a1414 100%);
-    box-shadow: 0 0 30px 6px rgba(255,106,106,0.5), 0 0 70px 18px rgba(255,106,106,0.2);
-  }
-  @keyframes record-pulse {
-    0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.08); }
-  }
+  /* ---------- The orb: a rotating holographic wireframe globe on
+     canvas, same design as the desktop HUD -- gold/amber, deliberately
+     not blue. ---------- */
+  #orbCanvas { display:block; }
 
   .status-text {
     font-size:13px; letter-spacing:0.5px; color: var(--text-dim);
@@ -125,7 +67,7 @@
     width:100%; max-width:360px;
     display:flex; align-items:center; gap:8px;
     background: rgba(255,255,255,0.06);
-    border:1px solid rgba(120,200,255,0.22);
+    border:1px solid rgba(255,190,130,0.22);
     border-radius:24px;
     padding: 6px 6px 6px 18px;
   }
@@ -134,11 +76,11 @@
     color: var(--text); font-size:15px; padding:10px 4px;
     min-width: 0;
   }
-  .input-row input::placeholder { color: rgba(220,240,255,0.4); }
+  .input-row input::placeholder { color: rgba(255,230,200,0.4); }
   .round-btn {
     width:38px; height:38px; border-radius:50%; flex-shrink:0;
     display:flex; align-items:center; justify-content:center;
-    background: rgba(52,229,255,0.16); border:1px solid rgba(120,200,255,0.3);
+    background: rgba(255,179,71,0.16); border:1px solid rgba(255,190,130,0.3);
     color: var(--cyan); cursor:pointer; font-size:15px;
   }
   .round-btn.mic.active {
@@ -152,7 +94,7 @@
 
   .toast {
     position:absolute; bottom:calc(24px + env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%) translateY(6px);
-    background: rgba(20,20,20,0.9); border:1px solid rgba(120,200,255,0.3); border-radius:10px;
+    background: rgba(20,20,20,0.9); border:1px solid rgba(255,190,130,0.3); border-radius:10px;
     padding:8px 16px; font-size:12.5px; color:var(--text); opacity:0; pointer-events:none;
     transition: all 0.25s ease; white-space:nowrap; max-width: 85vw; overflow:hidden; text-overflow:ellipsis;
   }
@@ -165,11 +107,11 @@
   }
   .setup-overlay[hidden] { display: none; }
   .setup-overlay input {
-    width:100%; max-width:320px; background: rgba(255,255,255,0.08); border:1px solid rgba(120,200,255,0.3);
+    width:100%; max-width:320px; background: rgba(255,255,255,0.08); border:1px solid rgba(255,190,130,0.3);
     border-radius:10px; padding:12px 14px; color:var(--text); font-size:14px; outline:none;
   }
   .setup-overlay button {
-    background: rgba(52,229,255,0.18); border:1px solid rgba(120,200,255,0.3); border-radius:10px;
+    background: rgba(255,179,71,0.18); border:1px solid rgba(255,190,130,0.3); border-radius:10px;
     padding:10px 20px; color:var(--text); font-size:14px; cursor:pointer;
   }
   .setup-overlay p { color: var(--text-dim); font-size:13px; text-align:center; max-width:300px; }
@@ -187,11 +129,7 @@
   <div class="settings-btn" id="settingsBtn" title="Change access key">&#9881;</div>
   <div class="pc-status" id="pcStatus"><span class="dot"></span><span id="pcStatusText">Main PC offline</span><button class="start-pc-btn" id="startPcBtn" hidden>Start Jarvis</button></div>
 
-  <div class="orb-outer" id="orbOuter">
-    <div class="orb-ring"></div>
-    <div class="orb-ring outer2"></div>
-    <div class="orb"></div>
-  </div>
+  <canvas id="orbCanvas" width="220" height="220"></canvas>
   <div class="status-text" id="statusText">Tap the mic, or type below</div>
 
   <div class="input-row">
@@ -210,7 +148,6 @@
 <audio id="player" hidden></audio>
 
 <script>
-const orbOuter = document.getElementById("orbOuter");
 const statusText = document.getElementById("statusText");
 const player = document.getElementById("player");
 const toastEl = document.getElementById("toast");
@@ -223,9 +160,235 @@ function showToast(text) {
   toastTimer = setTimeout(() => toastEl.classList.remove("show"), 3200);
 }
 
+// ============================================================
+// The orb: same rotating holographic wireframe globe as the desktop
+// HUD (Jarvis_Desktop_HUD.py / jarvis_hud.html) -- kept in sync
+// deliberately, just scaled down and a bit lighter for phone
+// performance. Gold/amber, not blue: "too much like Ultron."
+// ============================================================
+const canvas = document.getElementById("orbCanvas");
+const ctx = canvas.getContext("2d");
+const SIZE = 220;
+const R = 76;
+let rotY = 0, rotX = 0.15;
+let orbState = "idle"; // idle | thinking | speaking | recording
+
+function project(x, y, z) {
+  const scale = 180 / (180 - z);
+  return { x: SIZE / 2 + x * scale, y: SIZE / 2 + y * scale, scale };
+}
+
+function rotatePoint(p) {
+  let { x, y, z } = p;
+  let cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+  let x1 = x * cosY - z * sinY;
+  let z1 = x * sinY + z * cosY;
+  let cosX = Math.cos(rotX), sinX = Math.sin(rotX);
+  let y1 = y * cosX - z1 * sinX;
+  let z2 = y * sinX + z1 * cosX;
+  return { x: x1, y: y1, z: z2 };
+}
+
+// Not a perfect sphere on purpose -- layered sine waves as a cheap
+// stand-in for real 3D noise, so it bulges and dents organically.
+function bulge(ux, uy, uz) {
+  const n = Math.sin(ux * 3.4 + uy * 2.1) * 0.5
+          + Math.sin(uy * 2.6 - uz * 3.7 + 1.3) * 0.35
+          + Math.sin(uz * 4.8 + ux * 1.6 - 0.7) * 0.3
+          + Math.sin((ux + uy + uz) * 5.5) * 0.18;
+  return R * (1 + n * 0.16);
+}
+
+function buildGrid() {
+  const lines = [];
+  const meridianCount = 18, parallelCount = 10, segs = 44;
+  for (let m = 0; m < meridianCount; m++) {
+    const lon = (m / meridianCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.06;
+    const pts = [];
+    for (let s = 0; s <= segs; s++) {
+      const lat = (s / segs) * Math.PI - Math.PI / 2;
+      const ux = Math.cos(lat) * Math.cos(lon), uy = Math.sin(lat), uz = Math.cos(lat) * Math.sin(lon);
+      const rad = bulge(ux, uy, uz);
+      pts.push({ x: rad * ux, y: rad * uy, z: rad * uz });
+    }
+    lines.push(pts);
+  }
+  for (let p = 1; p < parallelCount; p++) {
+    const lat = (p / parallelCount) * Math.PI - Math.PI / 2 + (Math.random() - 0.5) * 0.03;
+    const pts = [];
+    for (let s = 0; s <= segs; s++) {
+      const lon = (s / segs) * Math.PI * 2;
+      const ux = Math.cos(lat) * Math.cos(lon), uy = Math.sin(lat), uz = Math.cos(lat) * Math.sin(lon);
+      const rad = bulge(ux, uy, uz);
+      pts.push({ x: rad * ux, y: rad * uy, z: rad * uz });
+    }
+    lines.push(pts);
+  }
+  return lines;
+}
+
+function buildLights(count) {
+  const pts = [];
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < count; i++) {
+    const yFrac = 1 - (i / (count - 1)) * 2;
+    const radiusAtY = Math.sqrt(1 - yFrac * yFrac);
+    const theta = golden * i;
+    const ux = Math.cos(theta) * radiusAtY, uy = yFrac, uz = Math.sin(theta) * radiusAtY;
+    const rad = bulge(ux, uy, uz) * (0.94 + Math.random() * 0.12);
+    pts.push({ x: rad * ux, y: rad * uy, z: rad * uz, twinkle: Math.random() * Math.PI * 2 });
+  }
+  return pts;
+}
+
+function buildChaosArcs(count, segs) {
+  segs = segs || 40;
+  const arcs = [];
+  for (let i = 0; i < count; i++) {
+    const a1 = Math.random() * Math.PI * 2, a2 = Math.random() * Math.PI - Math.PI / 2;
+    const b1 = Math.random() * Math.PI * 2, b2 = Math.random() * Math.PI - Math.PI / 2;
+    const start = { x: Math.cos(a2) * Math.cos(a1), y: Math.sin(a2), z: Math.cos(a2) * Math.sin(a1) };
+    const end = { x: Math.cos(b2) * Math.cos(b1), y: Math.sin(b2), z: Math.cos(b2) * Math.sin(b1) };
+    const pts = [];
+    for (let s = 0; s <= segs; s++) {
+      const t = s / segs;
+      let x = start.x + (end.x - start.x) * t;
+      let y = start.y + (end.y - start.y) * t;
+      let z = start.z + (end.z - start.z) * t;
+      const len = Math.sqrt(x * x + y * y + z * z) || 1;
+      const ux = x / len, uy = y / len, uz = z / len;
+      const rad = bulge(ux, uy, uz);
+      pts.push({ x: rad * ux, y: rad * uy, z: rad * uz });
+    }
+    arcs.push(pts);
+  }
+  return arcs;
+}
+
+function buildSpokes(count) {
+  const spokes = [];
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < count; i++) {
+    const yFrac = 1 - (i / (count - 1)) * 2;
+    const radiusAtY = Math.sqrt(1 - yFrac * yFrac);
+    const theta = golden * i + (Math.random() - 0.5) * 0.4;
+    const ux = Math.cos(theta) * radiusAtY, uy = yFrac, uz = Math.sin(theta) * radiusAtY;
+    const rad = bulge(ux, uy, uz) * (0.9 + Math.random() * 0.2);
+
+    let px = -uz, py = 0, pz = ux;
+    const plen = Math.sqrt(px * px + py * py + pz * pz) || 1;
+    px /= plen; py /= plen; pz /= plen;
+    const qx = uy * pz - uz * py, qy = uz * px - ux * pz, qz = ux * py - uy * px;
+
+    const wobbleAmp = R * (0.05 + Math.random() * 0.14);
+    const freq = 1 + Math.random() * 2.5;
+    const phase1 = Math.random() * Math.PI * 2;
+    const phase2 = Math.random() * Math.PI * 2;
+
+    const segs = 16;
+    const pts = [];
+    for (let s = 0; s <= segs; s++) {
+      const t = s / segs;
+      const w1 = Math.sin(t * Math.PI * freq + phase1) * wobbleAmp * t;
+      const w2 = Math.cos(t * Math.PI * freq + phase2) * wobbleAmp * t * 0.7;
+      pts.push({
+        x: rad * ux * t + px * w1 + qx * w2,
+        y: rad * uy * t + py * w1 + qy * w2,
+        z: rad * uz * t + pz * w1 + qz * w2,
+      });
+    }
+    spokes.push(pts);
+  }
+  return spokes;
+}
+
+const gridLines = buildGrid();
+const lights = buildLights(180);
+const chaosArcs = buildChaosArcs(45, 40);
+const spokes = buildSpokes(45);
+
+function colorForState() {
+  if (orbState === "recording") return { line: "255,106,106", light: "255,180,180", glow: 20 };
+  if (orbState === "thinking") return { line: "255,163,71", light: "255,224,163", glow: 22 };
+  if (orbState === "speaking") return { line: "255,140,61", light: "255,200,140", glow: 26 };
+  return { line: "255,179,71", light: "255,224,163", glow: 14 };
+}
+
+function drawLine(pts, color, baseAlpha) {
+  ctx.beginPath();
+  let started = false;
+  for (const raw of pts) {
+    const r = rotatePoint(raw);
+    if (r.z < -R * 0.85) { started = false; continue; }
+    const proj = project(r.x, r.y, r.z);
+    if (!started) { ctx.moveTo(proj.x, proj.y); started = true; }
+    else { ctx.lineTo(proj.x, proj.y); }
+  }
+  ctx.strokeStyle = `rgba(${color},${baseAlpha})`;
+  ctx.lineWidth = 0.7;
+  ctx.stroke();
+}
+
+function drawSpoke(pts, color) {
+  const r0 = rotatePoint(pts[0]);
+  const first = project(r0.x, r0.y, r0.z);
+  const r1 = rotatePoint(pts[pts.length - 1]);
+  const lastProj = project(r1.x, r1.y, r1.z);
+  const grad = ctx.createLinearGradient(first.x, first.y, lastProj.x, lastProj.y);
+  grad.addColorStop(0, `rgba(${color},0.55)`);
+  grad.addColorStop(1, `rgba(${color},0.02)`);
+  ctx.beginPath();
+  ctx.moveTo(first.x, first.y);
+  ctx.lineTo(lastProj.x, lastProj.y);
+  ctx.strokeStyle = grad;
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+}
+
+function drawOrb() {
+  ctx.clearRect(0, 0, SIZE, SIZE);
+  const c = colorForState();
+
+  ctx.save();
+  ctx.shadowColor = `rgba(${c.line},0.9)`;
+  ctx.shadowBlur = c.glow * 0.4;
+  for (const line of gridLines) drawLine(line, c.line, 0.15);
+  for (const arc of chaosArcs) drawLine(arc, c.line, 0.06);
+  for (const spoke of spokes) drawSpoke(spoke, c.line);
+  ctx.restore();
+
+  const core = ctx.createRadialGradient(SIZE / 2, SIZE / 2, 3, SIZE / 2, SIZE / 2, R * 0.55);
+  core.addColorStop(0, `rgba(${c.light},0.35)`);
+  core.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = core;
+  ctx.fillRect(0, 0, SIZE, SIZE);
+
+  const now = performance.now() / 500;
+  for (const p of lights) {
+    const r = rotatePoint(p);
+    if (r.z < -R * 0.4) continue;
+    const proj = project(r.x, r.y, r.z);
+    const twinkle = 0.5 + 0.5 * Math.sin(now + p.twinkle);
+    const depthAlpha = Math.max(0.15, (r.z + R) / (2 * R));
+    const radius = 0.5 + 0.9 * depthAlpha * twinkle;
+    ctx.beginPath();
+    ctx.arc(proj.x, proj.y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${c.light},${(0.35 + 0.5 * twinkle) * depthAlpha})`;
+    ctx.shadowColor = `rgba(${c.light},0.9)`;
+    ctx.shadowBlur = 5;
+    ctx.fill();
+  }
+
+  const speed = orbState === "thinking" ? 0.014 : orbState === "recording" ? 0.011 : orbState === "speaking" ? 0.009 : 0.004;
+  rotY += speed;
+  rotX = 0.15 + Math.sin(performance.now() / 4000) * 0.05;
+
+  requestAnimationFrame(drawOrb);
+}
+requestAnimationFrame(drawOrb);
+
 function setState(state) {
-  orbOuter.classList.remove("thinking", "speaking", "recording");
-  if (state) orbOuter.classList.add(state);
+  orbState = state || "idle";
   const labels = {
     thinking: "Thinking...",
     speaking: "Speaking...",
@@ -299,7 +462,7 @@ startPcBtn.addEventListener("click", async () => {
 // replies to messages this phone sent. Queued and played one at a time,
 // never interrupting whatever the phone itself is already doing. ----
 function isOrbBusy() {
-  return orbOuter.classList.contains("thinking") || orbOuter.classList.contains("speaking") || orbOuter.classList.contains("recording");
+  return orbState === "thinking" || orbState === "speaking" || orbState === "recording";
 }
 
 let lastEventId = localStorage.getItem("jarvisLastEventId") || "";
