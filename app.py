@@ -92,16 +92,6 @@ run_on_pc -- do not guess or invent an answer to those from general
 knowledge, even one that sounds plausible. Only state a PC-specific
 fact, or claim something was done, when run_on_pc's actual result says
 so. If it reports the PC is offline, tell Danny plainly.
-
-If Danny says anything like "let's switch to code", "let's do this in
-code", or "switch to code", that is ALWAYS a literal command to start a
-real coding session on the PC (Jarvis Code mode) -- call run_on_pc with
-it immediately, with no clarifying question first. Do NOT interpret
-this as Danny wanting to chat about code, or as ambiguous, and do NOT
-reply as if a session has started, is ready, or that you're "all set"
-unless run_on_pc's actual result says so -- confirmed live that without
-this instruction, the model answered convincingly ("We're all set for
-coding, sir") without calling the tool at all, and no session existed.
 """
 
 
@@ -114,7 +104,9 @@ def _load_state():
         "command_results": {},
         "pc_last_seen": 0,
         "start_requested": False,
-        "code_events": [],
+        "mirror_events": [],
+        "pending_mirror_messages": [],
+        "mirror_reset_requested": False,
     }
     if os.path.exists(STATE_PATH):
         try:
@@ -167,12 +159,7 @@ RUN_ON_PC_TOOL = {
             "anything. Use this for ANY request to DO something on the "
             "computer, exactly as he'd say it directly, e.g. 'open steam "
             "and play grand theft auto v'. Don't try to work out how to do "
-            "it yourself here -- the PC already knows how. This ALWAYS "
-            "includes phrases like 'let's switch to code', 'let's do this "
-            "in code', or 'switch to code' -- these start a real coding "
-            "session on the PC (Jarvis Code mode) and must be delegated "
-            "here verbatim, never answered conversationally or treated as "
-            "a request to just talk about code."
+            "it yourself here -- the PC already knows how."
         ),
         "parameters": {
             "type": "object",
@@ -188,24 +175,22 @@ RUN_ON_PC_TOOL = {
 }
 
 
-# Mirrors _CODE_MODE_TRIGGERS on the PC (Jarvis_FINAL_WORKING.py).
-# Deliberately checked BEFORE the AI model ever sees the message --
-# confirmed live, twice, with two different phrasings ("lets switch to
-# code" alone, and "lets switch to code to fix jarvis") that even an
-# explicit system-prompt instruction doesn't reliably make the model
-# call run_on_pc for this. Both times it answered with a convincing
-# fake "we're in code mode now" reply while nothing reached the PC at
-# all. This is too important to a repair fallback to leave to a
-# probabilistic judgment call, so it's a plain substring match instead.
-_CODE_MODE_TRIGGERS = (
-    "do this in code", "do that in code", "lets do this in code", "let's do this in code",
+# Checked BEFORE the AI model ever sees the message, same reasoning as
+# the old code-mode check this replaced: confirmed live, repeatedly,
+# that even an explicit system-prompt instruction doesn't reliably make
+# a model call a tool for this instead of just answering conversationally
+# with a convincing fake "sure, I'm on it" -- too important to a repair
+# fallback to leave to a probabilistic judgment call.
+_MIRROR_TRIGGERS = (
+    "fix jarvis", "fix desktop jarvis", "repair jarvis",
     "switch to code", "lets switch to code", "let's switch to code",
+    "do this in code", "do that in code", "lets do this in code", "let's do this in code",
 )
 
 
-def _looks_like_code_mode_request(text):
+def _looks_like_mirror_request(text):
     lowered = text.lower()
-    return any(trigger in lowered for trigger in _CODE_MODE_TRIGGERS)
+    return any(trigger in lowered for trigger in _MIRROR_TRIGGERS)
 
 
 def _is_pc_online():
@@ -341,11 +326,20 @@ def api_message():
     if not user_text:
         return jsonify({"error": "empty message"}), 400
 
+    # A request to fix/rebuild Jarvis needs the separate mirror page,
+    # not a reply from either brain here -- it's a live mirror of the
+    # actual dev conversation with Claude, independent of the PC
+    # engine's health (which will likely be unstable during exactly
+    # this conversation). See /api/mirror_message and static/mirror.html.
+    if _looks_like_mirror_request(user_text):
+        return jsonify({
+            "reply": "Opening the code mirror for you, sir.",
+            "open_mirror": True,
+            "transcribed_text": user_text,
+        })
+
     try:
-        if _looks_like_code_mode_request(user_text):
-            reply_text = _run_on_pc(user_text)
-        else:
-            reply_text = _ask_openai(user_text, state["recent_context"])
+        reply_text = _ask_openai(user_text, state["recent_context"])
     except Exception as error:
         return jsonify({"error": f"AI reply failed: {error}"}), 502
 
@@ -570,10 +564,6 @@ def api_pc_command_result():
     with _state_lock:
         state = _load_state()
         state["command_results"][command_id] = str(payload.get("reply", ""))
-        # Code-mode messages (see /api/code_message) are fire-and-forget
-        # from the phone's side -- nothing ever reads their result back
-        # out of this dict, so without a cap it would grow by one entry
-        # per code-mode message for as long as a session runs.
         if len(state["command_results"]) > 200:
             state["command_results"] = dict(list(state["command_results"].items())[-200:])
         _save_state(state)
@@ -602,20 +592,15 @@ def api_launcher_poll():
     return jsonify({"start_requested": requested})
 
 
-@app.route("/api/code_message", methods=["POST"])
-def api_code_message():
+@app.route("/api/mirror_message", methods=["POST"])
+def api_mirror_message():
     """
-    The phone's "code mode" screen sends typed replies here while a
-    Jarvis Code session is active. Deliberately reuses the exact same
-    pending_commands queue /api/pc_poll already serves -- Jarvis's main
-    loop already knows to route anything it receives straight into the
-    active code session (or handle an exit phrase) once one is running,
-    so no separate PC-side polling is needed for this at all.
-
-    Fire-and-forget: unlike run_on_pc, this never waits for a reply
-    here. A code session's actual output arrives continuously through
-    the separate /api/code_events feed as the model streams it, not as
-    one bounded response to a single message.
+    The mirror page (static/mirror.html) sends typed replies here.
+    Queued for the launcher's own poll (jarvis_launcher.py, independent
+    of the Jarvis engine) to pick up and run -- fire-and-forget, since a
+    mirror reply can take a while (it forks the whole conversation's
+    history) and arrives separately through /api/mirror_events as the
+    model streams it, not as one bounded response to this request.
     """
     auth_error = _require_auth()
     if auth_error:
@@ -628,58 +613,78 @@ def api_code_message():
 
     with _state_lock:
         state = _load_state()
-        state["pending_commands"].append({"id": uuid.uuid4().hex, "command": text})
+        state["pending_mirror_messages"].append(text)
         _save_state(state)
 
     return jsonify({"status": "queued"})
 
 
-@app.route("/api/code_said", methods=["POST"])
-def api_code_said():
+@app.route("/api/mirror_reset", methods=["POST"])
+def api_mirror_reset():
     """
-    The PC pushes here for the active Jarvis Code session -- either a
-    chunk of transcript text, or a mode change (a session just started
-    or ended, possibly triggered by voice at the PC rather than the
-    phone). Kept entirely separate from /api/pc_said: this is meant to
-    be displayed as a scrolling chat log, never spoken aloud.
+    Called when the mirror page loads fresh -- starts the next message
+    from the designated live dev session again instead of continuing
+    wherever a previous mirror conversation left off, so opening the
+    page for a new problem doesn't drag in an old, unrelated one.
     """
     auth_error = _require_auth()
     if auth_error:
         return auth_error
 
-    payload = request.get_json(silent=True) or {}
-    event_type = str(payload.get("type", "")).strip()
-    if event_type not in ("text", "mode"):
-        return jsonify({"error": "invalid type"}), 400
-
-    event = {"id": uuid.uuid4().hex, "timestamp": time.time(), "type": event_type}
-    if event_type == "text":
-        text = str(payload.get("text", "")).strip()
-        if not text:
-            return jsonify({"error": "empty text"}), 400
-        event["text"] = text
-    else:
-        mode = str(payload.get("mode", "")).strip()
-        if mode not in ("start", "end"):
-            return jsonify({"error": "invalid mode"}), 400
-        event["mode"] = mode
-
     with _state_lock:
         state = _load_state()
-        state["code_events"].append(event)
-        # A code session's transcript is worth keeping a bit more
-        # history than pc_events -- capped so it still can't grow
-        # unbounded if the phone isn't open to drain it.
-        state["code_events"] = state["code_events"][-300:]
+        state["mirror_reset_requested"] = True
+        state["mirror_events"] = []
         _save_state(state)
 
     return jsonify({"status": "ok"})
 
 
-@app.route("/api/code_events", methods=["GET"])
-def api_code_events():
+@app.route("/api/mirror_poll", methods=["POST"])
+def api_mirror_poll():
+    """jarvis_launcher.py polls this every few seconds for pending mirror
+    messages and a reset flag. Fetch-and-clear, same pattern as pc_poll."""
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    with _state_lock:
+        state = _load_state()
+        messages = state["pending_mirror_messages"]
+        state["pending_mirror_messages"] = []
+        reset = state.get("mirror_reset_requested", False)
+        state["mirror_reset_requested"] = False
+        _save_state(state)
+
+    return jsonify({"messages": messages, "reset": reset})
+
+
+@app.route("/api/mirror_said", methods=["POST"])
+def api_mirror_said():
+    """The launcher pushes the mirror conversation's text here -- tool-use
+    markers and full replies. Never spoken; the mirror page displays it."""
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    payload = request.get_json(silent=True) or {}
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return jsonify({"error": "empty text"}), 400
+
+    with _state_lock:
+        state = _load_state()
+        state["mirror_events"].append({"id": uuid.uuid4().hex, "timestamp": time.time(), "text": text})
+        state["mirror_events"] = state["mirror_events"][-300:]
+        _save_state(state)
+
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/mirror_events", methods=["GET"])
+def api_mirror_events():
     """Same incremental since-cursor polling as /api/pc_events, for the
-    Jarvis Code transcript feed instead of spoken events."""
+    mirror conversation's text feed."""
     auth_error = _require_auth()
     if auth_error:
         return auth_error
@@ -687,7 +692,7 @@ def api_code_events():
     since = request.args.get("since", "")
     with _state_lock:
         state = _load_state()
-        events = state["code_events"]
+        events = state["mirror_events"]
 
     if not since:
         return jsonify({"events": [], "last_id": events[-1]["id"] if events else ""})
