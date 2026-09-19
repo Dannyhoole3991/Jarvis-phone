@@ -461,6 +461,12 @@ function drawOrb() {
 }
 requestAnimationFrame(drawOrb);
 
+// Safety net on top of the play()-rejection fix above: never trust an
+// audio 'ended' event (or anything else) to definitely clear "speaking"
+// -- if nothing has cleared it naturally within 30s, force it back to
+// idle rather than leave the orb stuck with no way out.
+let _speakingWatchdog = null;
+
 function setState(state) {
   orbState = state || "idle";
   const labels = {
@@ -469,6 +475,16 @@ function setState(state) {
     recording: "Listening...",
   };
   statusText.textContent = labels[state] || "Tap the mic, or type below";
+
+  if (_speakingWatchdog) {
+    clearTimeout(_speakingWatchdog);
+    _speakingWatchdog = null;
+  }
+  if (state === "speaking") {
+    _speakingWatchdog = setTimeout(() => {
+      if (orbState === "speaking") setState(null);
+    }, 30000);
+  }
 }
 
 // ---- Access key setup ----
@@ -687,8 +703,16 @@ async function handleResponse(res) {
   if (data.audio_base64) {
     player.src = "data:" + data.audio_mime + ";base64," + data.audio_base64;
     setState("speaking");
-    player.play().catch(() => {});
     player.onended = () => setState(null);
+    // Confirmed live: a PC-routed reply can take long enough (the PC has
+    // to think, speak, and relay back through polling) that the browser's
+    // autoplay permission window tied to the original tap expires by the
+    // time this runs. play() then rejects, 'ended' never fires since
+    // playback never started, and this used to just swallow the
+    // rejection -- leaving the orb stuck on "Speaking..." forever with no
+    // recovery. Now a failed play() resets state the same way a finished
+    // one does.
+    player.play().catch(() => setState(null));
   } else {
     setState(null);
   }
