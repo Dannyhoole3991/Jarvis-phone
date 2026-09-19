@@ -424,11 +424,11 @@ async function pollPcStatus() {
     const res = await fetch("/api/pc_status", { headers: { "Authorization": "Bearer " + getSecret() } });
     const data = await res.json();
     pcStatusEl.classList.toggle("online", !!data.pc_online);
-    pcStatusText.textContent = data.pc_online ? "Main PC online" : "Main PC offline";
+    pcStatusText.textContent = data.pc_online ? "Main PC online -- mirroring desktop" : "Main PC offline -- cloud mode";
     startPcBtn.hidden = !!data.pc_online;
   } catch (err) {
     pcStatusEl.classList.remove("online");
-    pcStatusText.textContent = "Main PC offline";
+    pcStatusText.textContent = "Main PC offline -- cloud mode";
     startPcBtn.hidden = false;
   }
 }

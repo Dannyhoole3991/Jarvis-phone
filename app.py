@@ -15,6 +15,7 @@ the PC through the sync endpoint, never the other way around.
 import base64
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -107,6 +108,13 @@ def _load_state():
         "mirror_events": [],
         "pending_mirror_messages": [],
         "mirror_reset_requested": False,
+        # Reachable regardless of the PC's power state -- see
+        # _pull_shared_memory_from_phone/_push_shared_memory_to_phone in
+        # Jarvis_FINAL_WORKING.py. The PC's own jarvis_memory.json stays
+        # the durable long-term archive; this is the always-reachable
+        # mailbox/cache re-seeded from it, and the only copy this app can
+        # read from when the PC is off.
+        "shared_memory": {"facts": {}, "reminders": []},
     }
     if os.path.exists(STATE_PATH):
         try:
@@ -193,6 +201,105 @@ def _looks_like_mirror_request(text):
     return any(trigger in lowered for trigger in _MIRROR_TRIGGERS)
 
 
+# Same reasoning, same model, as the PC's research_topic_online() in
+# Jarvis_FINAL_WORKING.py: gpt-4o-mini via chat completions (what
+# _ask_openai uses) has no web access at all, so a real research request
+# needs OpenAI's Responses API and its hosted web_search tool instead.
+# Only used when the PC is offline -- when it's online, _run_on_pc already
+# reaches the PC's own (now web-search-capable) conversational brain.
+OPENAI_RESEARCH_MODEL = os.environ.get("JARVIS_OPENAI_MODEL", "gpt-5-mini")
+
+_RESEARCH_TRIGGERS = (
+    "search for ", "can you search for ", "could you search for ",
+    "find me ", "look up ", "can you look up ", "could you look up ",
+    "search the internet for ", "search online for ", "search the web for ",
+    "research ", "can you research ", "could you research ", "please research ",
+    "look into ", "can you look into ", "could you look into ",
+    "give me ideas for ", "give me some ideas for ", "give me some ideas about ",
+    "what are some ideas for ", "what ideas do you have for ",
+)
+
+
+def _looks_like_research_request(text):
+    lowered = text.lower().strip()
+    return any(lowered.startswith(trigger) for trigger in _RESEARCH_TRIGGERS)
+
+
+# Mirrors the PC's own "remember that X is Y" parsing in
+# Jarvis_FINAL_WORKING.py (remember_fact and its prefixes), so a fact
+# stated to the phone while the PC is offline is saved into
+# shared_memory rather than lost -- the PC picks it up on its next
+# startup pull, or immediately if it's already running (see
+# _pull_shared_memory_from_phone / _push_shared_memory_to_phone). Only
+# used when the PC is offline; when it's online the message is relayed
+# there instead, and the PC's own remember_fact runs (see api_message).
+_REMEMBER_PREFIXES = ("remember that ", "remember ", "jarvis remember that ", "jarvis remember ")
+
+
+def _try_save_remembered_fact(user_text):
+    lowered = user_text.strip().lower()
+    for prefix in _REMEMBER_PREFIXES:
+        if lowered.startswith(prefix):
+            memory_text = user_text.strip()[len(prefix):].strip().rstrip(".?!")
+            if not memory_text:
+                return "What would you like me to remember, sir?"
+
+            fact_match = re.match(r"(?:that\s+)?(?:my\s+)?(.+?)\s+is\s+(.+)$", memory_text, re.IGNORECASE)
+            with _state_lock:
+                state = _load_state()
+                shared = state.setdefault("shared_memory", {"facts": {}, "reminders": []})
+                facts = shared.setdefault("facts", {})
+                if fact_match:
+                    key = fact_match.group(1).strip().lower()
+                    if key.startswith("my "):
+                        key = key[3:].strip()
+                    value = fact_match.group(2).strip()
+                    if key and value:
+                        facts[key] = value
+                        _save_state(state)
+                        return f"Got it. I'll remember that your {key} is {value}."
+                key = f"memory_{len(facts) + 1}"
+                facts[key] = memory_text
+                _save_state(state)
+                return "Got it. I'll remember that."
+    return None
+
+
+def _research_online(question):
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": OPENAI_RESEARCH_MODEL,
+                "instructions": (
+                    "You are Jarvis, researching something for Danny using live "
+                    "web search. Give a clear, conversational, spoken-style answer "
+                    "-- not a report, no markdown, no headings or bullet lists. Get "
+                    "to the actual answer or ideas quickly, mention anything "
+                    "genuinely current or uncertain, and keep it under 200 words "
+                    "unless the question clearly calls for more."
+                ),
+                "tools": [{"type": "web_search"}],
+                "input": question,
+            },
+            timeout=45,
+        )
+        response.raise_for_status()
+        data = response.json()
+        for item in data.get("output", []):
+            if item.get("type") == "message":
+                for content in item.get("content", []):
+                    if content.get("type") == "output_text":
+                        text = (content.get("text") or "").strip()
+                        if text:
+                            return text
+        return None
+    except Exception as error:
+        print("Web research error:", error)
+        return None
+
+
 def _is_pc_online():
     with _state_lock:
         state = _load_state()
@@ -229,8 +336,12 @@ def _run_on_pc(command):
     return "(The PC took too long to reply.)"
 
 
-def _ask_openai(user_text, recent_context):
-    messages = [{"role": "system", "content": JARVIS_PERSONALITY}]
+def _ask_openai(user_text, recent_context, shared_facts=None):
+    system_content = JARVIS_PERSONALITY
+    if shared_facts:
+        memory_lines = "\n".join(f"{key}: {value}" for key, value in shared_facts.items())
+        system_content += f"\n\nSAVED LONG-TERM MEMORY (recall these naturally when asked):\n{memory_lines}"
+    messages = [{"role": "system", "content": system_content}]
     for turn in recent_context[-10:]:
         messages.append({"role": turn["role"], "content": turn["content"]})
     messages.append({"role": "user", "content": user_text})
@@ -338,10 +449,33 @@ def api_message():
             "transcribed_text": user_text,
         })
 
-    try:
-        reply_text = _ask_openai(user_text, state["recent_context"])
-    except Exception as error:
-        return jsonify({"error": f"AI reply failed: {error}"}), 502
+    # Deterministic routing, not a model's judgment call -- confirmed live,
+    # repeatedly (see _looks_like_mirror_request above), that an LLM given a
+    # tool and told when to use it will sometimes just skip it and invent a
+    # plausible-sounding answer instead. That's exactly what was causing the
+    # missing replies / conflicting text: _ask_openai's model would
+    # sometimes decide not to call run_on_pc even while the PC was right
+    # there and online. Now the PC is simply always the source of truth
+    # when it's reachable, with no judgment call involved.
+    source = "cloud"
+    if _is_pc_online():
+        reply_text = _run_on_pc(user_text)
+        source = "pc"
+    else:
+        remembered_reply = _try_save_remembered_fact(user_text)
+        if remembered_reply:
+            reply_text = remembered_reply
+            source = "memory"
+        elif _looks_like_research_request(user_text):
+            answer = _research_online(user_text)
+            reply_text = answer or "I couldn't find anything useful on that just now, sir."
+            source = "research"
+        else:
+            try:
+                shared_facts = state.get("shared_memory", {}).get("facts", {})
+                reply_text = _ask_openai(user_text, state["recent_context"], shared_facts)
+            except Exception as error:
+                return jsonify({"error": f"AI reply failed: {error}"}), 502
 
     audio_b64 = None
     try:
@@ -367,6 +501,7 @@ def api_message():
         "audio_base64": audio_b64,
         "audio_mime": "audio/mpeg",
         "transcribed_text": user_text,
+        "source": source,
     })
 
 
@@ -387,6 +522,45 @@ def api_sync():
     state["pending_sync"] = []
     _save_state(state)
     return jsonify({"pending": pending})
+
+
+@app.route("/api/memory", methods=["GET"])
+def api_memory():
+    """
+    Read-only view of shared_memory -- called by the PC on startup (see
+    _pull_shared_memory_from_phone) to merge in anything remembered via
+    the phone while it was off, and used here in _ask_openai so this
+    app's own fallback brain can recall the same facts when the PC is
+    offline.
+    """
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+    state = _load_state()
+    return jsonify(state.get("shared_memory", {"facts": {}, "reminders": []}))
+
+
+@app.route("/api/memory_push", methods=["POST"])
+def api_memory_push():
+    """
+    Called by the PC (see _push_shared_memory_to_phone) every time its
+    own jarvis_memory.json is saved, so this backend always has a
+    reasonably current copy reachable even while the PC is off. The PC's
+    values win for any key it sends -- it's the durable long-term
+    archive; this is just the always-reachable mirror of it.
+    """
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+    payload = request.get_json(silent=True) or {}
+    with _state_lock:
+        state = _load_state()
+        shared = state.setdefault("shared_memory", {"facts": {}, "reminders": []})
+        shared.setdefault("facts", {}).update(payload.get("facts") or {})
+        if "reminders" in payload:
+            shared["reminders"] = payload["reminders"]
+        _save_state(state)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/speak_text", methods=["POST"])
