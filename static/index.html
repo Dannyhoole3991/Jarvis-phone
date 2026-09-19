@@ -92,6 +92,37 @@
 
   .control-row { display:flex; gap:14px; align-items:center; }
 
+  .orb-area {
+    display:flex; flex-direction:column; align-items:center; gap:26px;
+  }
+
+  /* Window mode: a full chat log with message history, same idea and
+     layout as the desktop HUD's toggle -- pure CSS visibility swap over
+     the same persistent state, so switching back never loses anything. */
+  .chat-log {
+    display:none;
+    width:100%; max-width:360px; flex:1; min-height:0;
+    overflow-y:auto;
+    border:1px solid rgba(255,190,130,0.22);
+    border-radius:14px;
+    padding:14px;
+    box-sizing:border-box;
+    background: rgba(255,255,255,0.04);
+  }
+  body.window-mode .orb-area { display:none; }
+  body.window-mode .chat-log { display:block; }
+  body.window-mode .wrap { padding-top:calc(56px + env(safe-area-inset-top)); }
+
+  .chat-msg { margin-bottom:14px; max-width:85%; }
+  .chat-msg.chat-user { margin-left:auto; text-align:right; }
+  .chat-msg.chat-jarvis { margin-right:auto; text-align:left; }
+  .chat-text {
+    display:inline-block; padding:8px 14px; border-radius:14px;
+    font-size:14px; line-height:1.4; white-space:pre-wrap; text-align:left;
+  }
+  .chat-user .chat-text { background: rgba(255,179,71,0.18); color: var(--cyan); }
+  .chat-jarvis .chat-text { background: rgba(255,255,255,0.08); color: var(--text); }
+
   .toast {
     position:absolute; bottom:calc(24px + env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%) translateY(6px);
     background: rgba(20,20,20,0.9); border:1px solid rgba(255,190,130,0.3); border-radius:10px;
@@ -129,8 +160,12 @@
   <div class="settings-btn" id="settingsBtn" title="Change access key">&#9881;</div>
   <div class="pc-status" id="pcStatus"><span class="dot"></span><span id="pcStatusText">Main PC offline</span><button class="start-pc-btn" id="startPcBtn" hidden>Start Jarvis</button></div>
 
-  <canvas id="orbCanvas" width="220" height="220"></canvas>
-  <div class="status-text" id="statusText">Tap the mic, or type below</div>
+  <div class="orb-area" id="orbArea">
+    <canvas id="orbCanvas" width="220" height="220"></canvas>
+    <div class="status-text" id="statusText">Tap the mic, or type below</div>
+  </div>
+
+  <div class="chat-log" id="chatLog"></div>
 
   <div class="input-row">
     <input id="textInput" type="text" placeholder="Type to Jarvis..." />
@@ -140,6 +175,7 @@
   <div class="control-row">
     <div class="round-btn mic" id="micBtn" title="Hold to talk">&#127908;</div>
     <div class="round-btn stop" id="stopBtn" title="Stop">&#9632;</div>
+    <div class="round-btn" id="modeToggleBtn" title="Switch to window view">&#9635;</div>
   </div>
 </div>
 
@@ -530,6 +566,31 @@ async function speakPcEvent(text) {
 
 setInterval(pollPcEvents, 2500);
 
+// ---- Chat log -- populated regardless of which view (orb or window) is
+// visible, so switching between them never loses history; same approach
+// as the desktop HUD's toggle. ----
+const chatLogEl = document.getElementById("chatLog");
+function appendChatMessage(role, text) {
+  if (!text) return;
+  const row = document.createElement("div");
+  row.className = "chat-msg " + (role === "user" ? "chat-user" : "chat-jarvis");
+  const textEl = document.createElement("div");
+  textEl.className = "chat-text";
+  textEl.textContent = text;
+  row.appendChild(textEl);
+  chatLogEl.appendChild(row);
+  chatLogEl.scrollTop = chatLogEl.scrollHeight;
+}
+
+const modeToggleBtn = document.getElementById("modeToggleBtn");
+let windowMode = false;
+modeToggleBtn.addEventListener("click", () => {
+  windowMode = !windowMode;
+  document.body.classList.toggle("window-mode", windowMode);
+  modeToggleBtn.title = windowMode ? "Switch to orb view" : "Switch to window view";
+  modeToggleBtn.innerHTML = windowMode ? "&#9679;" : "&#9635;";
+});
+
 // ---- Sending messages ----
 async function sendText(text) {
   if (!text.trim()) return;
@@ -580,6 +641,11 @@ async function handleResponse(res) {
     window.location.href = "/mirror.html";
     return;
   }
+  // Driven entirely by the server's own response so this works the same
+  // for typed and spoken messages -- for voice, the text isn't known
+  // until transcription finishes server-side.
+  if (data.transcribed_text) appendChatMessage("user", data.transcribed_text);
+  if (data.reply) appendChatMessage("jarvis", data.reply);
   if (data.audio_base64) {
     player.src = "data:" + data.audio_mime + ";base64," + data.audio_base64;
     setState("speaking");
