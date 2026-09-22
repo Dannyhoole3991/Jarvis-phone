@@ -4,6 +4,21 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Jarvis</title>
+
+<!-- Installable as a proper full-screen app from the iOS Share Sheet
+     ("Add to Home Screen") -- apple-mobile-web-app-capable is what iOS
+     actually keys off for that, not manifest.json (that one matters
+     more for Android/Chrome, included for parity/future-proofing). No
+     service worker on purpose: this app is inherently live/online
+     (real-time voice, TTS, PC relay), so an offline cache would just be
+     a source of stale-state bugs for no real benefit. -->
+<link rel="manifest" href="/manifest.json" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Jarvis" />
+<meta name="theme-color" content="#000000" />
+<link rel="apple-touch-icon" href="/icon-180.png" />
+<link rel="icon" href="/icon-192.png" />
 <style>
   :root{
     --cyan: #ffb347;
@@ -73,7 +88,7 @@
   }
   .input-row input {
     flex:1; background:transparent; border:none; outline:none;
-    color: var(--text); font-size:15px; padding:10px 4px;
+    color: var(--text); font-size:16px; padding:10px 4px;
     min-width: 0;
   }
   .input-row input::placeholder { color: rgba(255,230,200,0.4); }
@@ -139,7 +154,7 @@
   .setup-overlay[hidden] { display: none; }
   .setup-overlay input {
     width:100%; max-width:320px; background: rgba(255,255,255,0.08); border:1px solid rgba(255,190,130,0.3);
-    border-radius:10px; padding:12px 14px; color:var(--text); font-size:14px; outline:none;
+    border-radius:10px; padding:12px 14px; color:var(--text); font-size:16px; outline:none;
   }
   .setup-overlay button {
     background: rgba(255,179,71,0.18); border:1px solid rgba(255,190,130,0.3); border-radius:10px;

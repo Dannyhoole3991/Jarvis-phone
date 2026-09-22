@@ -488,12 +488,21 @@ def api_message():
     state["recent_context"].append({"role": "user", "content": user_text})
     state["recent_context"].append({"role": "assistant", "content": reply_text})
     state["recent_context"] = state["recent_context"][-40:]
-    state["pending_sync"].append({
-        "id": uuid.uuid4().hex,
-        "timestamp": timestamp,
-        "user_text": user_text,
-        "reply_text": reply_text,
-    })
+    # Only queue for /api/sync when the PC did NOT already see this live
+    # (source == "pc") -- confirmed live that queuing unconditionally
+    # meant every PC-online exchange got queued too, and the next PC
+    # restart's startup sync pull (see _pull_pending_conversation_from_
+    # phone in Jarvis_FINAL_WORKING.py) re-added it as if new, duplicating
+    # it in conversation_history. /api/sync exists specifically to hand
+    # over what happened while the PC was OFF; the PC already has
+    # anything it handled live via its own remote_commands path.
+    if source != "pc":
+        state["pending_sync"].append({
+            "id": uuid.uuid4().hex,
+            "timestamp": timestamp,
+            "user_text": user_text,
+            "reply_text": reply_text,
+        })
     _save_state(state)
 
     return jsonify({
@@ -646,9 +655,17 @@ def api_pc_events():
         events = state["pc_events"]
 
     if not since:
-        # First call from a fresh page load -- don't dump potentially
-        # minutes of backlog at once, just start listening from now.
-        return jsonify({"events": [], "last_id": events[-1]["id"] if events else ""})
+        # Confirmed live: returning events:[] here while still advancing
+        # last_id to the CURRENT latest event is a real race -- if no
+        # event existed yet at this exact poll, last_id stays "", so the
+        # client's cursor never actually moves off empty. The next poll
+        # that happens to land the instant a real event appears then
+        # hits this exact branch again, silently marking that event as
+        # "already seen" without ever showing it. Simplest fix that
+        # can't lose anything: just return whatever's already here. The
+        # event lists are already capped (see below), so this is never
+        # an unbounded backlog dump.
+        return jsonify({"events": events, "last_id": events[-1]["id"] if events else ""})
 
     ids = [e["id"] for e in events]
     if since in ids:
@@ -869,7 +886,14 @@ def api_mirror_events():
         events = state["mirror_events"]
 
     if not since:
-        return jsonify({"events": [], "last_id": events[-1]["id"] if events else ""})
+        # Same race as /api/pc_events -- see the comment there. Returning
+        # events:[] while advancing last_id to whatever's currently
+        # latest can silently eat the very first reply in a conversation
+        # if it lands before the client's cursor has ever been set to a
+        # real value. Confirmed live: this is why a mirror reply showed
+        # nothing at all on the phone even though the launcher's side
+        # completed normally.
+        return jsonify({"events": events, "last_id": events[-1]["id"] if events else ""})
 
     ids = [e["id"] for e in events]
     if since in ids:
