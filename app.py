@@ -23,6 +23,15 @@ import uuid
 import requests
 from flask import Flask, jsonify, request, send_from_directory
 
+try:
+    import tapo_plug
+except Exception:
+    # tapo_plug imports the `tapo` package, which isn't installed on
+    # Render (only on the home server, which has real LAN access to the
+    # plug) -- fails open with power-on simply unavailable there, rather
+    # than crashing the whole app on an unrelated deploy.
+    tapo_plug = None
+
 app = Flask(__name__, static_folder="static", static_url_path="")
 
 # ------------------------------------------------------------------
@@ -223,6 +232,50 @@ _RESEARCH_TRIGGERS = (
 def _looks_like_research_request(text):
     lowered = text.lower().strip()
     return any(lowered.startswith(trigger) for trigger in _RESEARCH_TRIGGERS)
+
+
+# Same deterministic-phrase-before-model reasoning as the mirror/research
+# checks above -- this one matters even more, since it's the one path
+# that can actually act on real hardware (mains power to Danny's PC).
+_POWER_ON_TRIGGERS = (
+    "turn my pc on", "turn on my pc", "power on my pc", "power my pc on",
+    "turn the pc on", "turn on the pc", "switch my pc on", "switch on my pc",
+    "turn my computer on", "turn on my computer", "power on my computer",
+    "boot my pc", "boot up my pc", "boot my pc up", "start my pc up",
+    "wake my pc up", "wake up my pc",
+)
+
+
+def _looks_like_power_on_request(text):
+    lowered = text.lower().strip().rstrip(".?!")
+    return any(trigger in lowered for trigger in _POWER_ON_TRIGGERS)
+
+
+def _handle_power_on_request():
+    """
+    Turns the PC's smart plug on (harmless no-op if it's already on) and
+    queues a start request for jarvis_launcher.py to pick up once Windows
+    has booted (see /api/launcher_poll) -- so "turn my PC on" also gets
+    Jarvis itself running on it, not just the hardware powered up.
+    """
+    if tapo_plug is None:
+        return "I can't reach the smart plug from here, sir -- that only works from the home server."
+    try:
+        status = tapo_plug.get_status()
+        already_on = bool(status.get("device_on"))
+        if not already_on:
+            tapo_plug.turn_on()
+    except Exception as error:
+        return f"I couldn't reach the smart plug just now, sir: {error}"
+
+    with _state_lock:
+        state = _load_state()
+        state["start_requested"] = True
+        _save_state(state)
+
+    if already_on:
+        return "Your PC's already on, sir -- I've queued Jarvis to start up on it now."
+    return "Turning your PC on now, sir. Give it a minute or two to boot, and Jarvis will start itself up on it."
 
 
 # Mirrors the PC's own "remember that X is Y" parsing in
@@ -462,8 +515,10 @@ def api_message():
         reply_text = _run_on_pc(user_text)
         source = "pc"
     else:
-        remembered_reply = _try_save_remembered_fact(user_text)
-        if remembered_reply:
+        if _looks_like_power_on_request(user_text):
+            reply_text = _handle_power_on_request()
+            source = "power"
+        elif (remembered_reply := _try_save_remembered_fact(user_text)):
             reply_text = remembered_reply
             source = "memory"
         elif _looks_like_research_request(user_text):
@@ -700,14 +755,24 @@ def api_start_pc():
     Flags a start request for the PC's launcher (jarvis_launcher.py) to
     pick up on its next poll (see /api/launcher_poll) -- can't call the
     launcher directly for the same reason /api/pc_poll exists: this
-    backend has no route to the PC's private Tailscale address. Only
-    works if the PC itself is on/reachable; this does not power the
-    machine on. For now it always starts the terminal version; the
-    desktop HUD version will be added later.
+    backend has no route to the PC's private Tailscale address.
+
+    Also best-effort turns the PC's smart plug on first (see tapo_plug.py)
+    -- harmless no-op if it's already on/reachable, and it's the only way
+    "open Jarvis" can actually work when the PC is fully powered off
+    rather than just idle: jarvis_launcher.py itself can't poll for this
+    request at all until Windows has booted, so getting power to it is a
+    prerequisite, not an alternative, to the flag below.
     """
     auth_error = _require_auth()
     if auth_error:
         return auth_error
+
+    if tapo_plug is not None:
+        try:
+            tapo_plug.turn_on()
+        except Exception as error:
+            print("start_pc: could not reach the smart plug (continuing anyway):", error)
 
     with _state_lock:
         state = _load_state()
