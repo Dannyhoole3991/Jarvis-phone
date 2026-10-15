@@ -467,6 +467,21 @@ def _dashboard_summary(dashboard, pushed_at, pc_online):
     def needs(n):
         return [f"NEEDS DANNY (his to-do jobs):\n{n['text'][:1500]}"] if n.get("text") else []
 
+    def jobs(j):
+        lines = []
+        for a in j.get("waiting_for_you") or []:
+            verb = "needs Danny to" if a.get("kind") == "hand" else "asks to"
+            lines.append(f"JOB WAITING FOR DANNY: Job {a.get('run_id')} {verb}: {a.get('what')}"
+                         + (f" ({a['why']})" if a.get("why") else "") + ". He answers it with the buttons in the Jarvis window on his PC"
+                         " (it can't be answered from the phone).")
+        listed = j.get("jobs") or []
+        if listed:
+            lines.append("Jarvis's recent \"do it\" jobs: " + "; ".join(
+                f"Job {x.get('id')} {(x.get('title') or '')[:60]} ({x.get('status')}"
+                + (f", ${x['cost_usd']:.2f}" if isinstance(x.get("cost_usd"), (int, float)) else "") + ")" for x in listed[:10]))
+        return lines
+
+    section("jobs", jobs)
     section("store", store)
     section("money", money)
     section("advertising", ads)

@@ -161,6 +161,38 @@ class PhoneServerTests(unittest.TestCase):
         got = self.client.post("/api/cj_pay/answers", headers=AUTH, json={}).get_json()["answers"]
         self.assertEqual([a["action"] for a in got], ["reject"])
 
+    # ---- Jarvis's "do it" jobs: shown on the phone, answered only in the Jarvis window on the PC.
+    JOBS = {"jobs": [{"id": 12, "title": "List the snow globe on Etsy", "status": "running", "created_at": 1, "cost_usd": 0.42},
+                     {"id": 11, "title": "Tidy product photos", "status": "succeeded", "created_at": 1, "cost_usd": 1.5}],
+            "waiting_for_you": [{"id": 3, "run_id": 12, "kind": "approval", "what": "publish the Etsy listing", "why": "it goes public",
+                                 "status": "pending", "created_at": 1},
+                                {"id": 4, "run_id": 12, "kind": "hand", "what": "type the Etsy login code", "why": "",
+                                 "status": "pending", "created_at": 1}]}
+
+    def test_jobs_reach_the_phone_dashboard(self):
+        self.client.post("/api/dashboard_push", headers=AUTH, json={"jobs": self.JOBS})
+        d = self.client.get("/api/dashboard", headers=AUTH).get_json()
+        self.assertEqual(d["dashboard"]["jobs"], self.JOBS)
+
+    def test_chat_brain_knows_what_the_jobs_are_waiting_for(self):
+        self.client.post("/api/dashboard_push", headers=AUTH, json={"jobs": self.JOBS})
+        with mock.patch.object(A, "_ask_chat_brain", return_value="One question, sir.") as brain:
+            self.client.post("/api/message", json={"text": "anything waiting?"}, headers=AUTH)
+        text = brain.call_args[0][3]
+        self.assertIn("Job 12 asks to: publish the Etsy listing (it goes public)", text)
+        self.assertIn("Job 12 needs Danny to: type the Etsy login code.", text)
+        self.assertIn("buttons in the Jarvis window on his PC", text)
+        self.assertIn("Job 11 Tidy product photos (succeeded, $1.50)", text)
+
+    def test_phone_cannot_answer_a_job_question(self):
+        routes = [r.rule for r in A.app.url_map.iter_rules()]
+        self.assertFalse([r for r in routes if "approv" in r or ("job" in r and r != "/api/pc_job/<job_id>")], "approvals are answered in the PC window only")
+        page = open(os.path.join(os.path.dirname(A.__file__), "static", "index.html"), encoding="utf-8").read()
+        jobs_js = page[page.index("function jobCards"):page.index("infoBody.addEventListener")]
+        self.assertNotIn("<button", jobs_js)
+        self.assertNotIn("fetch(", jobs_js)
+        self.assertIn("Answer it with the buttons in the Jarvis window on your PC.", jobs_js)
+
 
 if __name__ == "__main__":
     unittest.main()
