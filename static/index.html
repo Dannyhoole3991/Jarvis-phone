@@ -1177,7 +1177,7 @@ function payCards(d) {
   const cards = offers.map((o) => {
     if (o.method === "handoff") {
       return `<div class="card pay-card"><h3>Pay CJ for an order</h3><div class="md">${esc(o.summary)}</div>
-        <p class="sub">Checked and ready. CJ needs your card's security code, so you pay this one: open CJ, choose your saved card, type the code, tick the terms box, press PAY. Jarvis checks it went through.</p>
+        <p class="sub">Checked and ready. CJ needs your card's security code, so you pay this one: open CJ (if it shows the order list, find ${esc(o.shop_order)} and press its pay button), choose your saved card, type the code, tick the terms box, press PAY. Jarvis checks it went through.</p>
         <div class="pay-btns"><a class="go" style="flex:1;text-align:center;padding:11px 0;border-radius:10px;background:#1f9d5c;color:#fff;font-weight:600;text-decoration:none"
           href="${esc(o.pay_url)}" target="_blank" rel="noopener">Open CJ to pay $${Number(o.amount_usd).toFixed(2)}</a></div></div>`;
     }
