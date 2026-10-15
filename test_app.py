@@ -114,6 +114,53 @@ class PhoneServerTests(unittest.TestCase):
         self.assertEqual(d["dashboard"]["needs_you"]["text"], "See https://example.com <b>")
         self.assertEqual(self.client.post("/api/dashboard_push", headers=AUTH, json={"gz": "not base64!"}).status_code, 400)
 
+    # ---- Paying CJ: the phone passes Danny's tap on; it never pays anything itself.
+    def pay_offer(self, **extra):
+        offer = dict({"id": 7, "nonce": "n0nce", "amount_usd": 15.62, "shop_order": "#1001", "summary": "Pay CJ $15.62 for order #1001",
+                      "expires_at": time.time() + 1500}, **extra)
+        self.client.post("/api/dashboard_push", headers=AUTH, json={"cj_pay": {"offers": [offer], "recent": []}})
+        return offer
+
+    def answer(self, **body):
+        return self.client.post("/api/cj_pay/answer", headers=AUTH, json=dict({"id": 7, "nonce": "n0nce", "amount_usd": 15.62,
+                                                                              "action": "pay"}, **body))
+
+    def test_pay_tap_reaches_the_pc_once(self):
+        self.pay_offer()
+        self.assertEqual(self.answer().status_code, 200)
+        self.assertEqual(self.answer().status_code, 409, "a second tap is refused")
+        d = self.client.get("/api/dashboard", headers=AUTH).get_json()
+        self.assertEqual(d["cj_pay_answered"]["7"]["action"], "pay")
+        got = self.client.post("/api/cj_pay/answers", headers=AUTH, json={}).get_json()["answers"]
+        self.assertEqual([(a["id"], a["nonce"], a["amount_usd"], a["action"]) for a in got], [(7, "n0nce", 15.62, "pay")])
+        self.assertEqual(self.client.post("/api/cj_pay/answers", headers=AUTH, json={}).get_json()["answers"], [],
+                         "handed to the PC once")
+
+    def test_pay_tap_must_match_the_current_request(self):
+        self.pay_offer()
+        self.assertEqual(self.answer(nonce="guess").status_code, 409)
+        self.assertEqual(self.answer(amount_usd=40).status_code, 409)
+        self.assertEqual(self.answer(id=8).status_code, 409)
+        self.assertEqual(self.answer(action="refund").status_code, 400)
+        self.assertEqual(self.client.post("/api/cj_pay/answers", headers=AUTH, json={}).get_json()["answers"], [])
+
+    def test_expired_pay_request_is_refused(self):
+        self.pay_offer(expires_at=time.time() - 1)
+        self.assertEqual(self.answer().status_code, 409)
+
+    def test_pay_needs_the_key(self):
+        self.pay_offer()
+        self.assertEqual(self.client.post("/api/cj_pay/answer", json={"id": 7, "nonce": "n0nce", "amount_usd": 15.62,
+                                                                       "action": "pay"}).status_code, 401)
+        self.assertEqual(self.client.post("/api/cj_pay/answers", json={}).status_code, 401)
+
+    def test_not_now(self):
+        self.pay_offer()
+        r = self.answer(action="reject").get_json()
+        self.assertIn("won't pay", r["text"])
+        got = self.client.post("/api/cj_pay/answers", headers=AUTH, json={}).get_json()["answers"]
+        self.assertEqual([a["action"] for a in got], ["reject"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -146,6 +146,9 @@ def _load_state():
         # The desktop dashboard copy the PC pushes (see /api/dashboard_push).
         "dashboard": None,
         "dashboard_at": 0,
+        # Danny's taps on a CJ "Pay" card: waiting for the PC's next look (see /api/cj_pay/*).
+        "cj_pay_answers": [],
+        "cj_pay_answered": {},
     }
     if os.path.exists(STATE_PATH):
         try:
@@ -680,7 +683,68 @@ def api_dashboard():
     with _state_lock:
         state = _load_state()
     return jsonify({"dashboard": state.get("dashboard"), "at": state.get("dashboard_at") or 0,
-                    "pc_online": _is_pc_online(), "now": time.time()})
+                    "pc_online": _is_pc_online(), "now": time.time(),
+                    "cj_pay_answered": state.get("cj_pay_answered") or {}})
+
+
+@app.route("/api/cj_pay/answer", methods=["POST"])
+def api_cj_pay_answer():
+    """Danny tapped Pay (or Not now) on a CJ payment card in the Needs-you tab.
+
+    Nothing is paid here: this backend can't reach the PC. The answer waits until the PC collects it
+    (/api/cj_pay/answers), and the PC checks it again against its own request before pressing anything.
+    Only an answer to a request in the PC's latest copy counts, with that request's one-off code and
+    exact amount, before it expires, and only the first answer to each request."""
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+    body = request.get_json(silent=True) or {}
+    action = body.get("action")
+    if action not in ("pay", "reject"):
+        return jsonify({"error": "pay or reject"}), 400
+    try:
+        rid, amount = int(body.get("id")), float(body.get("amount_usd"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "bad request"}), 400
+    nonce = str(body.get("nonce") or "")
+    with _state_lock:
+        state = _load_state()
+        offers = (((state.get("dashboard") or {}).get("cj_pay") or {}).get("offers")) or []
+        offer = next((o for o in offers if o.get("id") == rid), None)
+        if not offer or not nonce or offer.get("nonce") != nonce or abs(float(offer.get("amount_usd") or 0) - amount) > 0.005:
+            return jsonify({"error": "That payment request isn't current any more. Open the tab again to refresh it."}), 409
+        if (offer.get("expires_at") or 0) <= time.time():
+            return jsonify({"error": "That payment request has expired. Ask Jarvis on the PC to offer it again."}), 409
+        answered = state.setdefault("cj_pay_answered", {})
+        if str(rid) in answered:
+            return jsonify({"error": "You've already answered that one."}), 409
+        answered[str(rid)] = {"action": action, "at": time.time()}
+        state.setdefault("cj_pay_answers", []).append({"id": rid, "nonce": nonce, "amount_usd": amount, "action": action,
+                                                        "at": time.time()})
+        _save_state(state)
+    if action == "reject":
+        return jsonify({"status": "sent", "text": "OK: Jarvis won't pay CJ for that order."})
+    text = "Sent to your PC: Jarvis pays CJ within a minute and tells you when it's done."
+    if not _is_pc_online():
+        text = "Saved, but your PC looks off. Jarvis pays only if the PC picks this up before the request expires."
+    return jsonify({"status": "sent", "text": text})
+
+
+@app.route("/api/cj_pay/answers", methods=["POST"])
+def api_cj_pay_answers():
+    """The PC collects Danny's Pay taps (fetch-and-clear) and re-checks each one before acting."""
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+    with _state_lock:
+        state = _load_state()
+        answers = state.get("cj_pay_answers") or []
+        state["cj_pay_answers"] = []
+        known = {str(o.get("id")) for o in ((((state.get("dashboard") or {}).get("cj_pay") or {}).get("offers")) or [])}
+        state["cj_pay_answered"] = {k: v for k, v in (state.get("cj_pay_answered") or {}).items()
+                                    if k in known or time.time() - v.get("at", 0) < 3600}
+        _save_state(state)
+    return jsonify({"answers": answers})
 
 
 @app.route("/api/sync", methods=["GET"])

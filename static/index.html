@@ -210,6 +210,12 @@
   .bar > div { height:100%; background:var(--cyan); }
   .bar.hot > div { background:var(--red); }
   .md { font-size:13.5px; line-height:1.5; white-space:pre-wrap; }
+  .pay-card { border-color:rgba(53,224,138,0.5); }
+  .pay-btns { display:flex; gap:10px; margin-top:10px; }
+  .pay-btns button { flex:1; font-size:15px; padding:11px 0; border-radius:10px; border:1px solid rgba(255,190,130,0.3);
+    background:rgba(255,255,255,0.06); color:var(--text); }
+  .pay-btns button.go { background:#1f9d5c; border-color:#35e08a; color:#fff; font-weight:600; }
+  .pay-btns button:disabled { opacity:0.5; }
   .pc-line { font-size:12.5px; color:var(--text-dim); text-align:center; max-width:320px; min-height:16px; }
   /* Each tab keeps its own conversation. */
   #pcLog { display:none; }
@@ -1159,9 +1165,49 @@ const RENDER = {
   },
   needs(d) {
     const n = d.needs_you || {};
-    return card("Needs you", n.text ? `<div class="md">${md(n.text)}</div>` : '<p class="sub">Nothing needs you right now.</p>');
+    return payCards(d) + card("Needs you", n.text ? `<div class="md">${md(n.text)}</div>` : '<p class="sub">Nothing needs you right now.</p>');
   },
 };
+
+// ---- Paying CJ: one tap = one order. The phone only passes the tap on; the PC checks it again and pays.
+function payCards(d) {
+  const p = d.cj_pay || {}, answered = (dash && dash.cj_pay_answered) || {}, now = dash ? dash.now : Date.now() / 1000;
+  const offers = (p.offers || []).filter((o) => o.expires_at > now);
+  const cards = offers.map((o) => {
+    const a = answered[String(o.id)];
+    const btns = a
+      ? `<p class="sub">${a.action === "pay" ? "Pay sent to your PC. Jarvis will say when it's done." : "You said not now."}</p>`
+      : `<div class="pay-btns"><button class="go" data-pay="${o.id}" data-act="pay">Pay $${Number(o.amount_usd).toFixed(2)}</button>
+         <button data-pay="${o.id}" data-act="reject">Not now</button></div>`;
+    return `<div class="card pay-card"><h3>Pay CJ for an order</h3><div class="md">${esc(o.summary)}</div>
+      <p class="sub">Jarvis presses Pay on CJ with the card you saved there. Expires in ${Math.max(1, Math.round((o.expires_at - now) / 60))} min.</p>${btns}</div>`;
+  });
+  const day = now - 86400, words = { paid: "paid ✔", failed: "didn't go through", needs_danny: "needs you on CJ", unclear: "check it on CJ",
+    blocked: "not paid", approved: "paying…", paying: "paying…" };
+  const recent = (p.recent || []).filter((r) => words[r.status] && (r.decided_at || r.finished_at || 0) > day).slice(0, 3);
+  const done = recent.length ? card("CJ payments today", recent.map((r) => row(`<b>${esc(r.shop_order)}</b> $${Number(r.amount_usd).toFixed(2)}`
+      + (r.result ? `<br><span class="sub">${esc(r.result)}</span>` : ""), esc(words[r.status]))).join("")) : "";
+  return cards.join("") + done;
+}
+infoBody.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-pay]");
+  if (!b) return;
+  const offers = (((dash || {}).dashboard || {}).cj_pay || {}).offers || [];
+  const o = offers.find((x) => String(x.id) === b.dataset.pay);
+  if (!o) return;
+  if (b.dataset.act === "pay" && !confirm(`Pay CJ $${Number(o.amount_usd).toFixed(2)} for order ${o.shop_order}?`)) return;
+  b.parentElement.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+  try {
+    const res = await fetch("/api/cj_pay/answer", { method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getSecret() },
+      body: JSON.stringify({ id: o.id, nonce: o.nonce, amount_usd: o.amount_usd, action: b.dataset.act }) });
+    const r = await res.json();
+    showToast(r.text || r.error || "Sent.");
+  } catch (err) {
+    showToast("Couldn't reach the phone server. Try again.");
+  }
+  renderInfo();
+});
 
 async function renderInfo() {
   if (!INFO_TABS.includes(currentTab)) return;
