@@ -106,6 +106,14 @@ class PhoneServerTests(unittest.TestCase):
             self.client.post("/api/message", json={"text": "hello"}, headers=AUTH)
         self.assertIn("Your video is live, sir.", self.events())
 
+    def test_compressed_dashboard_is_unpacked(self):
+        import base64, gzip, json
+        body = {"gz": base64.b64encode(gzip.compress(json.dumps({"needs_you": {"text": "See https://example.com <b>"}}).encode())).decode()}
+        self.assertEqual(self.client.post("/api/dashboard_push", headers=AUTH, json=body).status_code, 200)
+        d = self.client.get("/api/dashboard", headers=AUTH).get_json()
+        self.assertEqual(d["dashboard"]["needs_you"]["text"], "See https://example.com <b>")
+        self.assertEqual(self.client.post("/api/dashboard_push", headers=AUTH, json={"gz": "not base64!"}).status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()

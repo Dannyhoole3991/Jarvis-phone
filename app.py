@@ -20,6 +20,7 @@ point), so it lives in its own project/deploy, and only ever talks to
 the PC through the sync endpoint, never the other way around.
 """
 import base64
+import gzip
 import json
 import os
 import re
@@ -651,6 +652,16 @@ def api_dashboard_push():
     if (request.content_length or 0) > 1_500_000:
         return jsonify({"error": "too large"}), 413
     payload = request.get_json(silent=True)
+    if isinstance(payload, dict) and isinstance(payload.get("gz"), str):
+        # Sent gzipped + base64'd: Cloudflare in front of this server blocked the
+        # plain JSON (403 "Blocked"), presumably over links/text inside it.
+        try:
+            raw = gzip.decompress(base64.b64decode(payload["gz"]))
+            if len(raw) > 5_000_000:
+                return jsonify({"error": "too large"}), 413
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception:
+            return jsonify({"error": "couldn't unpack the dashboard"}), 400
     if not isinstance(payload, dict):
         return jsonify({"error": "expected a JSON object"}), 400
     with _state_lock:
