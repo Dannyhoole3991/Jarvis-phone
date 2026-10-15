@@ -1,11 +1,18 @@
 """
 Jarvis Phone -- the standalone, always-on cloud brain behind the iPhone
-web app. Runs independently of Danny's PC: when the PC/Jarvis engine is
-off, this is what actually answers, using OpenAI for conversation and
-the exact same ElevenLabs voice the PC uses, so it sounds like the same
-assistant either way. When the PC's Jarvis starts up, it calls
-/api/sync here to pull anything said to this cloud brain while it was
-away and merge it into its own memory.
+web app. Runs independently of Danny's PC, with the exact same
+ElevenLabs voice the PC uses, so it sounds like the same assistant.
+
+The app has tabs:
+  Chat  -- the quick brain (OpenAI), answers in a second or two and never
+           waits on the PC. Knows the dashboard copy the PC pushes.
+  PC    -- talks to the PC's own Jarvis (slower, but it can act): the
+           request is queued for the PC's next poll and everything the PC
+           says back (progress and answer) arrives through pc_events.
+  Money, Store, Ads, Business, Trading, Usage, Needs you -- read-only
+           views of that dashboard copy (/api/dashboard).
+When the PC's Jarvis starts up, it calls /api/sync here to pull anything
+said to the Chat brain and merge it into its own memory.
 
 Deliberately a separate, small service from Jarvis_FINAL_WORKING.py --
 it needs to run somewhere that isn't Danny's PC (that's the whole
@@ -46,7 +53,12 @@ ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "xru6qZB94sJdkyqP12qN")
 ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
 ELEVENLABS_SPEED = float(os.environ.get("ELEVENLABS_SPEED", "1.15"))
-OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+# The Chat tab's brain. gpt-5-mini with minimal reasoning measured ~1s per reply
+# (2026-10-15), faster than gpt-4o-mini's ~1.9s and sharper.
+OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-5-mini")
+OPENAI_CHAT_REASONING = os.environ.get("OPENAI_CHAT_REASONING", "minimal")
+# How long the PC tab keeps a job open before treating it as abandoned.
+PC_JOB_MAX_SECONDS = 15 * 60
 # Danny's PC lives on a private Tailscale address that this backend,
 # running on Render, has no route to -- Render was never on that
 # tailnet, and Tailscale Funnel (which would fix that) turned out to
@@ -88,20 +100,24 @@ checklist or a multi-step plan unless asked. Do not repeatedly ask "what
 would you like to do next?".
 
 CONTEXT
-You are Jarvis talking to Danny by phone. You have a tool, run_on_pc,
-that sends a request straight to your real body -- his actual Windows
-PC -- the only place that can actually open apps, launch games,
-control anything, or know any real fact about the PC's current state
-(what time its clock shows, what's running, what files exist, whether
-an app is open). You have NO other way to know any of that from here --
-you are not physically at the PC. Call run_on_pc for ANY request to DO
-something on the computer, AND for any question whose true answer
-depends on the PC's actual state. For example "what time is it [on the
-PC]", "is Steam open", "what's on my screen" all require calling
-run_on_pc -- do not guess or invent an answer to those from general
-knowledge, even one that sounds plausible. Only state a PC-specific
-fact, or claim something was done, when run_on_pc's actual result says
-so. If it reports the PC is offline, tell Danny plainly.
+You are Jarvis talking to Danny on his phone, in the app's Chat tab: the
+quick brain, built for fast answers. Replies are spoken aloud, so keep them
+to one to three short, natural sentences, with no markdown, lists or emoji.
+Give the answer and stop: don't tack on offers or "would you like me to"
+questions, and never offer anything you can't do from here (you can't set
+reminders, schedule things, post, or change anything).
+
+You can NOT control or check his PC from this tab: you can't open apps,
+post videos, read his screen or see anything live on the computer. If he
+asks for something like that, say in one short sentence that it needs the
+PC tab (at the top of the app), where his PC does it directly. Never
+pretend you did something on the PC.
+
+You DO have a recent copy of his dashboard below (his store orders and
+payouts, money, TikTok and adverts, business, trading, Claude usage and his
+"needs you" jobs), sent over from the PC every few minutes. Answer from it
+when he asks about those, and say how old it is if that matters (for
+example "as of ten minutes ago"). Never invent a number that isn't in it.
 """
 
 
@@ -124,6 +140,11 @@ def _load_state():
         # mailbox/cache re-seeded from it, and the only copy this app can
         # read from when the PC is off.
         "shared_memory": {"facts": {}, "reminders": []},
+        # PC tab jobs: {id: {"command", "queued_at", "done", "reply"}} -- see _queue_pc_job.
+        "pc_jobs": {},
+        # The desktop dashboard copy the PC pushes (see /api/dashboard_push).
+        "dashboard": None,
+        "dashboard_at": 0,
     }
     if os.path.exists(STATE_PATH):
         try:
@@ -166,32 +187,6 @@ def _transcribe_audio(audio_bytes, filename):
     return response.json().get("text", "").strip()
 
 
-RUN_ON_PC_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "run_on_pc",
-        "description": (
-            "Send a request straight to Danny's real Windows PC -- the only "
-            "place that can actually open apps, launch games, or control "
-            "anything. Use this for ANY request to DO something on the "
-            "computer, exactly as he'd say it directly, e.g. 'open steam "
-            "and play grand theft auto v'. Don't try to work out how to do "
-            "it yourself here -- the PC already knows how."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "The task, phrased plainly, as Danny would say it.",
-                }
-            },
-            "required": ["command"],
-        },
-    },
-}
-
-
 # Checked BEFORE the AI model ever sees the message, same reasoning as
 # the old code-mode check this replaced: confirmed live, repeatedly,
 # that even an explicit system-prompt instruction doesn't reliably make
@@ -211,11 +206,10 @@ def _looks_like_mirror_request(text):
 
 
 # Same reasoning, same model, as the PC's research_topic_online() in
-# Jarvis_FINAL_WORKING.py: gpt-4o-mini via chat completions (what
-# _ask_openai uses) has no web access at all, so a real research request
-# needs OpenAI's Responses API and its hosted web_search tool instead.
-# Only used when the PC is offline -- when it's online, _run_on_pc already
-# reaches the PC's own (now web-search-capable) conversational brain.
+# Jarvis_FINAL_WORKING.py: the Chat brain (plain chat completions) has no
+# web access at all, so a real research request needs OpenAI's Responses
+# API and its hosted web_search tool instead. Used by the Chat tab for
+# "search for / look up / research ..." requests.
 OPENAI_RESEARCH_MODEL = os.environ.get("JARVIS_OPENAI_MODEL", "gpt-5-mini")
 
 _RESEARCH_TRIGGERS = (
@@ -360,90 +354,152 @@ def _is_pc_online():
     return (time.time() - last_seen) < PC_ONLINE_THRESHOLD_SECONDS
 
 
-def _run_on_pc(command):
+def _queue_pc_job(command):
     """
-    Queue a task for the PC to pick up on its next poll (see
-    /api/pc_poll) and wait here for the result to land in
-    /api/pc_command_result. Never reasons about the task itself; just
-    relays it and returns whatever the PC actually said or did.
+    PC tab: hand the request to the PC (it picks it up on its next poll, about a
+    second, see /api/pc_poll) and return at once. Everything the PC then says,
+    progress and the final answer, reaches the phone through pc_events, and the
+    phone asks /api/pc_job/<id> whether it has finished.
     """
-    if not _is_pc_online():
-        return "(The PC is offline or unreachable right now.)"
-
-    command_id = uuid.uuid4().hex
+    job_id = uuid.uuid4().hex
+    now = time.time()
     with _state_lock:
         state = _load_state()
-        state["pending_commands"].append({"id": command_id, "command": command})
+        state["pending_commands"].append({"id": job_id, "command": command})
+        jobs = state.setdefault("pc_jobs", {})
+        jobs[job_id] = {"command": command, "queued_at": now, "done": False, "reply": None}
+        for old in [k for k, j in jobs.items() if now - j.get("queued_at", now) > PC_JOB_MAX_SECONDS]:
+            jobs.pop(old, None)
         _save_state(state)
-
-    deadline = time.time() + 45  # a bit under the phone's own 70s OpenAI timeout
-    while time.time() < deadline:
-        time.sleep(1)
-        with _state_lock:
-            state = _load_state()
-            if command_id in state["command_results"]:
-                reply = state["command_results"].pop(command_id)
-                _save_state(state)
-                return reply
-
-    return "(The PC took too long to reply.)"
+    return job_id
 
 
-def _ask_openai(user_text, recent_context, shared_facts=None):
+def _ago(seconds):
+    seconds = max(0, int(seconds))
+    if seconds < 90:
+        return "just now"
+    if seconds < 5400:
+        return f"{seconds // 60} minutes ago"
+    if seconds < 172800:
+        return f"{seconds // 3600} hours ago"
+    return f"{seconds // 86400} days ago"
+
+
+def _dashboard_summary(dashboard, pushed_at, pc_online):
+    """The PC's dashboard copy as compact text for the Chat brain. Every line is optional."""
+    if not dashboard:
+        return "No dashboard copy has arrived from the PC yet."
+    out = [f"Dashboard copy from the PC, sent {_ago(time.time() - (pushed_at or 0))}"
+           + ("" if pc_online else " (the PC is off right now, so this is the last copy)") + "."]
+
+    def section(name, fn):
+        try:
+            lines = fn(dashboard.get(name) or {})
+            if lines:
+                out.extend(lines)
+        except Exception:
+            pass
+
+    def store(s):
+        lines = []
+        orders = (s.get("orders") or {})
+        listed = orders.get("orders") or []
+        if orders.get("ok") or listed:
+            lines.append(f"Shopify orders ({len(listed)}):" if listed else "Shopify orders: none yet.")
+            for o in listed[:15]:
+                lines.append(f"  {o.get('number')} {o.get('date')}, {o.get('customer')}, {o.get('total')}, "
+                             f"{o.get('payment')}, fulfilment: {o.get('fulfilment') or 'not started'}")
+        pay = orders.get("payouts") or {}
+        if pay.get("pending"):
+            dates = ", ".join(f"{t.get('order')} {t.get('net')} on {t.get('payout_date')}" for t in pay.get("transactions") or [])
+            lines.append(f"Pending Shopify payout: {pay['pending']} ({dates}). Paid to his bank automatically.")
+        products = s.get("products") or []
+        if products:
+            lines.append(f"Store: {len(products)} live products, {sum(1 for p in products if p.get('christmas'))} in the Christmas range.")
+        return lines
+
+    def money(m):
+        return [f"Money check ({_ago(time.time() - m['at'])}): {m['text'][:700]}"] if m.get("text") and m.get("at") else []
+
+    def ads(a):
+        t = a.get("tiktok") or {}
+        if not t.get("ok"):
+            return []
+        metrics = ", ".join(f"{k.replace('_', ' ')} {v.get('value')}" for k, v in (t.get("metrics") or {}).items() if isinstance(v, dict))
+        top = sorted(t.get("videos") or [], key=lambda v: v.get("views") or 0, reverse=True)[:3]
+        lines = [f"TikTok (last 7 days): {metrics}."]
+        if top:
+            lines.append("Top TikTok videos: " + "; ".join(f"{(v.get('caption') or '')[:50]} ({v.get('views')} views)" for v in top))
+        return lines
+
+    def posts(p):
+        items = p.get("posts") or []
+        if not items:
+            return []
+        ready = sum(1 for i in items if i.get("status") == "ready")
+        posted = sum(1 for i in items if i.get("status") == "posted")
+        return [f"TikTok posting list: {ready} ready to post, {posted} posted (Danny posts them from the desktop Advertising tab)."]
+
+    def business(b):
+        keys = [k for k in ("revenue", "cost", "profit", "target") if b.get(k) is not None]
+        return ["Business engine: " + ", ".join(f"{k} {b[k]}" for k in keys)] if keys else []
+
+    def trading(t):
+        bits = [f"mode {t['mode']}" if t.get("mode") else "", f"{t['tested']} versions tested" if t.get("tested") else "",
+                t.get("forward_note") or ""]
+        bits = [b for b in bits if b]
+        return ["Trading research lab (paper only, no live trading): " + "; ".join(bits)] if bits else []
+
+    def usage(st):
+        windows = (st.get("usage") or {}).get("windows") or {}
+        names = {"five_hour": "5-hour session", "seven_day": "week"}
+        parts = []
+        for k, w in windows.items():
+            u = w.get("utilization")
+            if isinstance(u, (int, float)):
+                parts.append(f"{names.get(k, k.replace('_', ' '))} {u * 100 if u <= 1 else u:.0f}% used")
+        return ["Claude usage: " + ", ".join(parts)] if parts else []
+
+    def needs(n):
+        return [f"NEEDS DANNY (his to-do jobs):\n{n['text'][:1500]}"] if n.get("text") else []
+
+    section("store", store)
+    section("money", money)
+    section("advertising", ads)
+    section("posts", posts)
+    section("business", business)
+    section("trading", trading)
+    section("state", usage)
+    section("needs_you", needs)
+    return "\n".join(out)
+
+
+def _ask_chat_brain(user_text, recent_context, shared_facts=None, dashboard_text=""):
+    """The Chat tab: one quick OpenAI call, no tools, never waits on the PC."""
     system_content = JARVIS_PERSONALITY
     if shared_facts:
         memory_lines = "\n".join(f"{key}: {value}" for key, value in shared_facts.items())
         system_content += f"\n\nSAVED LONG-TERM MEMORY (recall these naturally when asked):\n{memory_lines}"
+    system_content += "\n\nNow: " + time.strftime("%A %d %B %Y, %H:%M") + " (UK time on the server may differ slightly)."
+    if dashboard_text:
+        system_content += "\n\n" + dashboard_text
     messages = [{"role": "system", "content": system_content}]
-    for turn in recent_context[-10:]:
+    for turn in recent_context[-12:]:
         messages.append({"role": turn["role"], "content": turn["content"]})
     messages.append({"role": "user", "content": user_text})
-
-    # Bounded loop: normally at most one tool call, but this allows a
-    # second round in case the model wants to check something else.
-    for _ in range(3):
-        response = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": OPENAI_CHAT_MODEL,
-                "messages": messages,
-                # Lower than a typical chat temperature -- measured live
-                # that 0.8 let the model skip calling run_on_pc and just
-                # invent a plausible-sounding (wrong) PC fact instead,
-                # inconsistently. Reliability on "did it actually check
-                # the PC" matters more here than conversational variety.
-                "temperature": 0.3,
-                "tools": [RUN_ON_PC_TOOL],
-            },
-            timeout=70,
-        )
-        response.raise_for_status()
-        message = response.json()["choices"][0]["message"]
-        tool_calls = message.get("tool_calls")
-
-        if not tool_calls:
-            return (message.get("content") or "").strip()
-
-        messages.append(message)
-        for call in tool_calls:
-            # Deliberately ignore whatever "command" argument the model
-            # generated and send Danny's actual words instead -- found
-            # live that for an unusual/compound instruction ("open code
-            # and find out why we can't close jarvis remotely"), the
-            # model doesn't always reproduce it verbatim like the tool
-            # description asks; it can paraphrase or garble it (one
-            # real case collapsed to just "open close"). The PC's own
-            # command handling already parses natural phrasing fine, so
-            # there's no reason to let the model rewrite it at all.
-            result = _run_on_pc(user_text)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": call["id"],
-                "content": result,
-            })
-
-    return "Sorry sir, that got a bit tangled talking to the PC. Try again in a moment?"
+    body = {"model": OPENAI_CHAT_MODEL, "messages": messages}
+    if OPENAI_CHAT_MODEL.startswith(("gpt-5", "o")):
+        body["reasoning_effort"] = OPENAI_CHAT_REASONING
+    else:
+        body["temperature"] = 0.5
+    response = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+        json=body,
+        timeout=40,
+    )
+    response.raise_for_status()
+    return (response.json()["choices"][0]["message"].get("content") or "").strip()
 
 
 def _synthesize_speech(text):
@@ -502,35 +558,37 @@ def api_message():
             "transcribed_text": user_text,
         })
 
-    # Deterministic routing, not a model's judgment call -- confirmed live,
-    # repeatedly (see _looks_like_mirror_request above), that an LLM given a
-    # tool and told when to use it will sometimes just skip it and invent a
-    # plausible-sounding answer instead. That's exactly what was causing the
-    # missing replies / conflicting text: _ask_openai's model would
-    # sometimes decide not to call run_on_pc even while the PC was right
-    # there and online. Now the PC is simply always the source of truth
-    # when it's reachable, with no judgment call involved.
-    source = "cloud"
-    if _is_pc_online():
-        reply_text = _run_on_pc(user_text)
-        source = "pc"
+    # Which tab sent it. "pc" (the PC tab): hand it straight to the PC and return
+    # at once -- the PC's progress and answer arrive through pc_events. Anything
+    # else (the Chat tab): the quick cloud brain answers, never waiting on the PC.
+    mode = (request.form.get("mode") if request.form else None) or (request.get_json(silent=True) or {}).get("mode") or "chat"
+
+    if mode == "pc":
+        if not _is_pc_online():
+            return jsonify({
+                "reply": "Your PC's offline, sir, so I can't reach it. Say \"turn my PC on\" in the Chat tab, or use the Start Jarvis button.",
+                "transcribed_text": user_text, "source": "pc_offline",
+            })
+        return jsonify({"queued": _queue_pc_job(user_text), "transcribed_text": user_text, "source": "pc"})
+
+    if _looks_like_power_on_request(user_text):
+        reply_text = _handle_power_on_request()
+        source = "power"
+    elif (remembered_reply := _try_save_remembered_fact(user_text)):
+        reply_text = remembered_reply
+        source = "memory"
+    elif _looks_like_research_request(user_text):
+        answer = _research_online(user_text)
+        reply_text = answer or "I couldn't find anything useful on that just now, sir."
+        source = "research"
     else:
-        if _looks_like_power_on_request(user_text):
-            reply_text = _handle_power_on_request()
-            source = "power"
-        elif (remembered_reply := _try_save_remembered_fact(user_text)):
-            reply_text = remembered_reply
-            source = "memory"
-        elif _looks_like_research_request(user_text):
-            answer = _research_online(user_text)
-            reply_text = answer or "I couldn't find anything useful on that just now, sir."
-            source = "research"
-        else:
-            try:
-                shared_facts = state.get("shared_memory", {}).get("facts", {})
-                reply_text = _ask_openai(user_text, state["recent_context"], shared_facts)
-            except Exception as error:
-                return jsonify({"error": f"AI reply failed: {error}"}), 502
+        try:
+            dashboard_text = _dashboard_summary(state.get("dashboard"), state.get("dashboard_at"), _is_pc_online())
+            reply_text = _ask_chat_brain(user_text, state["recent_context"], state.get("shared_memory", {}).get("facts", {}),
+                                         dashboard_text)
+            source = "cloud"
+        except Exception as error:
+            return jsonify({"error": f"AI reply failed: {error}"}), 502
 
     audio_b64 = None
     try:
@@ -539,26 +597,24 @@ def api_message():
     except Exception as error:
         print("TTS failed, returning text only:", error)
 
-    timestamp = time.time()
-    state["recent_context"].append({"role": "user", "content": user_text})
-    state["recent_context"].append({"role": "assistant", "content": reply_text})
-    state["recent_context"] = state["recent_context"][-40:]
-    # Only queue for /api/sync when the PC did NOT already see this live
-    # (source == "pc") -- confirmed live that queuing unconditionally
-    # meant every PC-online exchange got queued too, and the next PC
-    # restart's startup sync pull (see _pull_pending_conversation_from_
-    # phone in Jarvis_FINAL_WORKING.py) re-added it as if new, duplicating
-    # it in conversation_history. /api/sync exists specifically to hand
-    # over what happened while the PC was OFF; the PC already has
-    # anything it handled live via its own remote_commands path.
-    if source != "pc":
-        state["pending_sync"].append({
+    # Re-read under the lock and change only what this exchange adds: the state
+    # loaded at the top is seconds old by now, and saving it whole would wipe
+    # anything the PC wrote meanwhile (a pc_said event, its poll heartbeat).
+    with _state_lock:
+        fresh = _load_state()
+        fresh["recent_context"] = (fresh["recent_context"] + [
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": reply_text},
+        ])[-40:]
+        # The PC gets these through /api/sync, so its own memory knows what
+        # was said on the phone's Chat tab.
+        fresh["pending_sync"].append({
             "id": uuid.uuid4().hex,
-            "timestamp": timestamp,
+            "timestamp": time.time(),
             "user_text": user_text,
             "reply_text": reply_text,
         })
-    _save_state(state)
+        _save_state(fresh)
 
     return jsonify({
         "reply": reply_text,
@@ -567,6 +623,53 @@ def api_message():
         "transcribed_text": user_text,
         "source": source,
     })
+
+
+@app.route("/api/pc_job/<job_id>", methods=["GET"])
+def api_pc_job(job_id):
+    """The PC tab asks this whether its request has finished (the answer itself
+    arrives as a pc_event, so it's spoken in order with the PC's progress)."""
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+    with _state_lock:
+        job = _load_state().get("pc_jobs", {}).get(job_id)
+    if not job:
+        return jsonify({"done": True, "missing": True})
+    expired = time.time() - job.get("queued_at", 0) > PC_JOB_MAX_SECONDS
+    return jsonify({"done": bool(job.get("done")) or expired, "reply": job.get("reply"),
+                    "seconds": int(time.time() - job.get("queued_at", time.time()))})
+
+
+@app.route("/api/dashboard_push", methods=["POST"])
+def api_dashboard_push():
+    """The PC sends a copy of its desktop dashboard here every few minutes
+    (jarvis_v2/phone_sync.py) for the phone's info tabs and the Chat brain."""
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+    if (request.content_length or 0) > 1_500_000:
+        return jsonify({"error": "too large"}), 413
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "expected a JSON object"}), 400
+    with _state_lock:
+        state = _load_state()
+        state["dashboard"] = payload
+        state["dashboard_at"] = time.time()
+        _save_state(state)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/dashboard", methods=["GET"])
+def api_dashboard():
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+    with _state_lock:
+        state = _load_state()
+    return jsonify({"dashboard": state.get("dashboard"), "at": state.get("dashboard_at") or 0,
+                    "pc_online": _is_pc_online(), "now": time.time()})
 
 
 @app.route("/api/sync", methods=["GET"])
@@ -680,6 +783,11 @@ def api_pc_said():
 
     with _state_lock:
         state = _load_state()
+        # The PC posts a job's answer twice, as speech (here) and as the job's
+        # result (/api/pc_command_result), in either order. Same text within
+        # 20 seconds is the same message, so it's only queued once.
+        if any(e.get("text") == text and time.time() - e.get("timestamp", 0) < 20 for e in state["pc_events"][-10:]):
+            return jsonify({"status": "duplicate"})
         state["pc_events"].append({
             "id": uuid.uuid4().hex,
             "timestamp": time.time(),
@@ -817,11 +925,22 @@ def api_pc_command_result():
     if not command_id:
         return jsonify({"error": "missing id"}), 400
 
+    reply = str(payload.get("reply", ""))
     with _state_lock:
         state = _load_state()
-        state["command_results"][command_id] = str(payload.get("reply", ""))
+        state["command_results"][command_id] = reply
         if len(state["command_results"]) > 200:
             state["command_results"] = dict(list(state["command_results"].items())[-200:])
+        job = state.setdefault("pc_jobs", {}).get(command_id)
+        if job is not None:
+            job.update(done=True, reply=reply, finished_at=time.time())
+            # The PC normally SAYS its answer, which already reached the phone as a
+            # pc_event. If it didn't (e.g. "Jarvis took too long to reply."), add it,
+            # so the PC tab always gets an answer -- and never the same one twice.
+            said = {e.get("text", "").strip() for e in state["pc_events"] if e.get("timestamp", 0) >= job.get("queued_at", 0)}
+            if reply.strip() and reply.strip() not in said:
+                state["pc_events"].append({"id": uuid.uuid4().hex, "timestamp": time.time(), "text": reply.strip()})
+                state["pc_events"] = state["pc_events"][-100:]
         _save_state(state)
 
     return jsonify({"status": "ok"})

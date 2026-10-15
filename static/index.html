@@ -161,6 +161,60 @@
     padding:10px 20px; color:var(--text); font-size:14px; cursor:pointer;
   }
   .setup-overlay p { color: var(--text-dim); font-size:13px; text-align:center; max-width:300px; }
+
+  /* ---------- Tabs: Chat (quick brain), PC (the PC's own Jarvis), and
+     read-only copies of the desktop dashboard. ---------- */
+  .tabs {
+    position:absolute; top:calc(48px + env(safe-area-inset-top)); left:0; right:0; z-index:6;
+    display:flex; gap:6px; overflow-x:auto; padding:0 12px 6px; -webkit-overflow-scrolling:touch;
+    scrollbar-width:none;
+  }
+  .tabs::-webkit-scrollbar { display:none; }
+  .tab {
+    flex-shrink:0; font-size:13px; padding:7px 13px; border-radius:16px; color:var(--text-dim);
+    background:rgba(255,255,255,0.05); border:1px solid rgba(255,190,130,0.15); position:relative;
+  }
+  .tab.on { color:#000; background:var(--cyan); border-color:var(--cyan); font-weight:600; }
+  .tab .badge {
+    position:absolute; top:-4px; right:-4px; min-width:16px; height:16px; border-radius:8px; padding:0 4px;
+    background:var(--red); color:#fff; font-size:10px; line-height:16px; text-align:center; box-sizing:border-box;
+  }
+  .tab .badge[hidden] { display:none; }
+  .wrap { padding-top:calc(96px + env(safe-area-inset-top)); }
+  body.window-mode .wrap { padding-top:calc(100px + env(safe-area-inset-top)); }
+  body.info-tab .wrap { display:none; }
+  .info {
+    display:none; position:absolute; top:calc(96px + env(safe-area-inset-top)); left:0; right:0; bottom:0;
+    overflow-y:auto; padding:6px 14px calc(24px + env(safe-area-inset-bottom)); box-sizing:border-box;
+    -webkit-user-select:text; user-select:text;
+  }
+  body.info-tab .info { display:block; }
+  .info-head { font-size:11.5px; color:var(--text-dim); margin:2px 2px 10px; }
+  .card {
+    background:rgba(255,255,255,0.045); border:1px solid rgba(255,190,130,0.16); border-radius:14px;
+    padding:12px 14px; margin-bottom:12px;
+  }
+  .card h3 { margin:0 0 8px; font-size:12px; font-weight:600; letter-spacing:0.6px; text-transform:uppercase; color:var(--cyan); }
+  .tiles { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:12px; }
+  .tile { background:rgba(255,255,255,0.045); border:1px solid rgba(255,190,130,0.16); border-radius:12px; padding:10px 12px; }
+  .tile .k { font-size:10.5px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; }
+  .tile .v { font-size:20px; font-weight:600; margin-top:2px; }
+  .tile .n { font-size:11px; color:var(--text-dim); margin-top:2px; }
+  .row { display:flex; justify-content:space-between; gap:10px; padding:7px 0; border-top:1px solid rgba(255,190,130,0.08); font-size:13.5px; }
+  .row:first-of-type { border-top:none; }
+  .row .l { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  .row .r { flex-shrink:0; color:var(--text-dim); text-align:right; }
+  .sub { color:var(--text-dim); font-size:12px; }
+  .good { color:#35e08a; } .bad { color:var(--red); }
+  .bar { height:7px; border-radius:4px; background:rgba(255,255,255,0.08); margin:6px 0 10px; overflow:hidden; }
+  .bar > div { height:100%; background:var(--cyan); }
+  .bar.hot > div { background:var(--red); }
+  .md { font-size:13.5px; line-height:1.5; white-space:pre-wrap; }
+  .pc-line { font-size:12.5px; color:var(--text-dim); text-align:center; max-width:320px; min-height:16px; }
+  /* Each tab keeps its own conversation. */
+  #pcLog { display:none; }
+  body.window-mode.tab-pc #chatLog { display:none; }
+  body.window-mode.tab-pc #pcLog { display:block; }
 </style>
 </head>
 <body>
@@ -178,9 +232,11 @@
   <div class="orb-area" id="orbArea">
     <canvas id="orbCanvas" width="220" height="220"></canvas>
     <div class="status-text" id="statusText">Tap the mic, or type below</div>
+    <div class="pc-line" id="pcLine"></div>
   </div>
 
   <div class="chat-log" id="chatLog"></div>
+  <div class="chat-log" id="pcLog"></div>
 
   <div class="input-row">
     <input id="textInput" type="text" placeholder="Type to Jarvis..." />
@@ -192,6 +248,23 @@
     <div class="round-btn stop" id="stopBtn" title="Stop">&#9632;</div>
     <div class="round-btn" id="modeToggleBtn" title="Switch to window view">&#9635;</div>
   </div>
+</div>
+
+<nav class="tabs" id="tabs">
+  <div class="tab" data-tab="chat">Chat</div>
+  <div class="tab" data-tab="pc">PC<span class="badge" id="pcBadge" hidden></span></div>
+  <div class="tab" data-tab="money">Money</div>
+  <div class="tab" data-tab="store">Store</div>
+  <div class="tab" data-tab="ads">Ads</div>
+  <div class="tab" data-tab="business">Business</div>
+  <div class="tab" data-tab="trading">Trading</div>
+  <div class="tab" data-tab="usage">Usage</div>
+  <div class="tab" data-tab="needs">Needs you</div>
+</nav>
+
+<div class="info" id="info">
+  <div class="info-head" id="infoHead"></div>
+  <div id="infoBody"></div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -489,7 +562,9 @@ function setState(state) {
     speaking: "Speaking...",
     recording: "Listening...",
   };
-  statusText.textContent = labels[state] || "Tap the mic, or type below";
+  statusText.textContent = labels[state] || (currentTab === "pc"
+    ? "Talking to your PC: slower, but it can do things"
+    : "Tap the mic, or type below");
 
   if (_speakingWatchdog) {
     clearTimeout(_speakingWatchdog);
@@ -502,6 +577,8 @@ function setState(state) {
   }
 }
 
+let currentTab = localStorage.getItem("jarvisTab") || "chat";
+
 // ---- Access key setup ----
 function getSecret() { return localStorage.getItem("jarvisPhoneSecret") || ""; }
 function setSecret(value) { localStorage.setItem("jarvisPhoneSecret", value); }
@@ -513,6 +590,7 @@ document.getElementById("secretSaveBtn").addEventListener("click", () => {
   if (!value) return;
   setSecret(value);
   setupOverlay.hidden = true;
+  loadClips();
 });
 document.getElementById("settingsBtn").addEventListener("click", () => {
   secretInput.value = getSecret();
@@ -566,11 +644,16 @@ startPcBtn.addEventListener("click", async () => {
 // progress, reassurance check-ins, routine completions) -- not just
 // replies to messages this phone sent. Queued and played one at a time,
 // never interrupting whatever the phone itself is already doing. ----
-function isOrbBusy() {
-  return orbState === "thinking" || orbState === "speaking" || orbState === "recording";
+// Events wait for the phone's own speech or recording, and for a Chat reply
+// in flight -- but NOT for the PC tab's "waiting on the PC" state: hearing the
+// PC's progress during that wait is the whole point.
+let chatInFlight = false;
+function eventsMustWait() {
+  return orbState === "speaking" || orbState === "recording" || chatInFlight;
 }
 
 let lastEventId = localStorage.getItem("jarvisLastEventId") || "";
+let firstEventPoll = !lastEventId;   // a brand-new phone shows recent history but doesn't read it all out
 const pcEventQueue = [];
 let drainingQueue = false;
 
@@ -584,8 +667,19 @@ async function pollPcEvents() {
       lastEventId = data.last_id;
       localStorage.setItem("jarvisLastEventId", lastEventId);
     }
-    for (const event of (data.events || [])) {
-      pcEventQueue.push(event.text);
+    const events = data.events || [];
+    if (firstEventPoll) {
+      firstEventPoll = false;
+      events.slice(-6).forEach((e) => appendChatMessage("jarvis", e.text, "pc"));
+      return;
+    }
+    for (const event of events) {
+      // Everything the PC says lands in the PC tab's conversation. It's only
+      // spoken while that tab is open; elsewhere the tab gets a badge instead.
+      appendChatMessage("jarvis", event.text, "pc");
+      heardFromPc(event.text);
+      if (currentTab === "pc") pcEventQueue.push(event.text);
+      else bumpPcBadge();
     }
     drainPcEventQueue();
   } catch (err) {
@@ -598,10 +692,8 @@ async function drainPcEventQueue() {
   drainingQueue = true;
   try {
     while (pcEventQueue.length > 0) {
-      // Wait for the phone's own conversation (if any) to finish first --
-      // this never talks over something the user is actively doing.
-      while (isOrbBusy()) {
-        await new Promise((r) => setTimeout(r, 400));
+      while (eventsMustWait()) {
+        await new Promise((r) => setTimeout(r, 300));
       }
       const text = pcEventQueue.shift();
       await speakPcEvent(text);
@@ -630,25 +722,114 @@ async function speakPcEvent(text) {
   } catch (err) {
     // Skip this one and move on rather than getting the queue stuck.
   }
-  setState(null);
+  afterSpeaking();
 }
 
-setInterval(pollPcEvents, 2500);
+// Faster while the PC tab is open or a PC job is running: that's when the gap is heard.
+(function eventLoop() {
+  pollPcEvents().finally(() => setTimeout(eventLoop, (currentTab === "pc" || pcJob) ? 1000 : 4000));
+})();
+
+// ---- PC jobs: one request from the PC tab, from "sent" until the PC says it's done ----
+let pcJob = null;   // { id, lastHeard, fillers, done }
+const pcLine = document.getElementById("pcLine");
+
+function setPcWaiting() {
+  setState("thinking");
+  statusText.textContent = "Your PC is working on it...";
+}
+function afterSpeaking() {
+  if (pcJob && !pcJob.done) setPcWaiting();
+  else setState(null);
+}
+function heardFromPc(text) {
+  if (pcJob) pcJob.lastHeard = Date.now();
+  pcLine.textContent = currentTab === "pc" ? "PC: " + (text.length > 90 ? text.slice(0, 88) + "..." : text) : "";
+}
+function startPcJob(id) {
+  pcJob = { id, lastHeard: Date.now(), fillers: 0, done: false };
+  if (orbState !== "speaking") setPcWaiting();
+}
+
+setInterval(async () => {
+  if (!pcJob) return;
+  if (!pcJob.done) {
+    try {
+      const res = await fetch("/api/pc_job/" + pcJob.id, { headers: { "Authorization": "Bearer " + getSecret() } });
+      const data = await res.json();
+      if (data.done) pcJob.done = true;
+    } catch (err) {}
+  }
+  if (pcJob.done) {
+    // Finished: let its last words play out, then settle.
+    if (!pcEventQueue.length && !drainingQueue && orbState !== "speaking") {
+      pcJob = null;
+      setState(null);
+    }
+    return;
+  }
+  // No word from the PC for 20 seconds: say so, rather than leave dead air (at most 3 times).
+  if (Date.now() - pcJob.lastHeard > 20000 && pcJob.fillers < 3 && currentTab === "pc" && !eventsMustWait() && !drainingQueue) {
+    pcJob.fillers += 1;
+    pcJob.lastHeard = Date.now();
+    await playClip("wait");
+  }
+}, 2000);
+
+// ---- Short fixed lines, made once and kept, so they play the instant you send ----
+const CLIPS = { send: "Sending that to your PC, sir.", wait: "Still working on it, sir." };
+const clipAudio = {};
+async function loadClips() {
+  if (!getSecret()) return;
+  for (const [name, text] of Object.entries(CLIPS)) {
+    const key = "jarvisClip:" + text;
+    try {
+      const cached = localStorage.getItem(key);
+      if (cached) { clipAudio[name] = cached; continue; }
+    } catch (err) {}
+    try {
+      const res = await fetch("/api/speak_text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getSecret() },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json();
+      if (data.audio_base64) {
+        clipAudio[name] = "data:" + data.audio_mime + ";base64," + data.audio_base64;
+        try { localStorage.setItem(key, clipAudio[name]); } catch (err) {}
+      }
+    } catch (err) {}
+  }
+}
+function playClip(name) {
+  const src = clipAudio[name];
+  if (!src) return Promise.resolve();
+  setState("speaking");
+  return new Promise((resolve) => {
+    player.src = src;
+    player.onended = resolve;
+    player.play().catch(resolve);
+  }).then(afterSpeaking);
+}
+loadClips();
 
 // ---- Chat log -- populated regardless of which view (orb or window) is
 // visible, so switching between them never loses history; same approach
 // as the desktop HUD's toggle. ----
 const chatLogEl = document.getElementById("chatLog");
-function appendChatMessage(role, text) {
+const pcLogEl = document.getElementById("pcLog");
+function appendChatMessage(role, text, log) {
   if (!text) return;
+  const target = log === "pc" ? pcLogEl : chatLogEl;
   const row = document.createElement("div");
   row.className = "chat-msg " + (role === "user" ? "chat-user" : "chat-jarvis");
   const textEl = document.createElement("div");
   textEl.className = "chat-text";
   textEl.textContent = text;
   row.appendChild(textEl);
-  chatLogEl.appendChild(row);
-  chatLogEl.scrollTop = chatLogEl.scrollHeight;
+  target.appendChild(row);
+  while (target.children.length > 200) target.removeChild(target.firstChild);
+  target.scrollTop = target.scrollHeight;
 }
 
 const modeToggleBtn = document.getElementById("modeToggleBtn");
@@ -660,45 +841,59 @@ modeToggleBtn.addEventListener("click", () => {
   modeToggleBtn.innerHTML = windowMode ? "&#9679;" : "&#9635;";
 });
 
-// ---- Sending messages ----
+// ---- Sending messages: the Chat tab asks the quick brain; the PC tab hands
+// the request to the PC and then hears its progress and answer as they come. ----
 async function sendText(text) {
   if (!text.trim()) return;
-  setState("thinking");
+  const mode = currentTab === "pc" ? "pc" : "chat";
+  if (mode === "pc") {
+    appendChatMessage("user", text, "pc");
+    playClip("send");                    // instant, while the request goes up
+  } else {
+    setState("thinking");
+    chatInFlight = true;
+  }
   try {
     const res = await fetch("/api/message", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getSecret() },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, mode }),
     });
-    await handleResponse(res);
+    await handleResponse(res, mode, true);
   } catch (err) {
     showToast("Couldn't reach Jarvis.");
-    setState(null);
+    chatInFlight = false;
+    afterSpeaking();
   }
 }
 
 async function sendAudio(blob) {
-  setState("thinking");
+  const mode = currentTab === "pc" ? "pc" : "chat";
+  if (mode === "chat") { setState("thinking"); chatInFlight = true; }
+  else if (orbState !== "speaking") setPcWaiting();   // don't cut off "Sending that to your PC"
   try {
     const form = new FormData();
     form.append("audio", blob, "voice.webm");
+    form.append("mode", mode);
     const res = await fetch("/api/message", {
       method: "POST",
       headers: { "Authorization": "Bearer " + getSecret() },
       body: form,
     });
-    await handleResponse(res);
+    await handleResponse(res, mode, false);
   } catch (err) {
     showToast("Couldn't reach Jarvis.");
-    setState(null);
+    chatInFlight = false;
+    afterSpeaking();
   }
 }
 
-async function handleResponse(res) {
+async function handleResponse(res, mode, typed) {
+  chatInFlight = false;
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     showToast(data.error || "Something went wrong.");
-    setState(null);
+    afterSpeaking();
     return;
   }
   const data = await res.json();
@@ -710,33 +905,40 @@ async function handleResponse(res) {
     window.location.href = "/mirror.html";
     return;
   }
+  if (mode === "pc") {
+    if (!typed && data.transcribed_text) appendChatMessage("user", data.transcribed_text, "pc");
+    if (data.queued) { startPcJob(data.queued); return; }
+    if (data.reply) {                    // e.g. the PC is offline
+      appendChatMessage("jarvis", data.reply, "pc");
+      await speakPcEvent(data.reply);
+    } else afterSpeaking();
+    return;
+  }
   // Driven entirely by the server's own response so this works the same
   // for typed and spoken messages -- for voice, the text isn't known
   // until transcription finishes server-side.
-  if (data.transcribed_text) appendChatMessage("user", data.transcribed_text);
-  if (data.reply) appendChatMessage("jarvis", data.reply);
+  if (data.transcribed_text) appendChatMessage("user", data.transcribed_text, "chat");
+  if (data.reply) appendChatMessage("jarvis", data.reply, "chat");
   if (data.audio_base64) {
     player.src = "data:" + data.audio_mime + ";base64," + data.audio_base64;
     setState("speaking");
-    player.onended = () => setState(null);
-    // Confirmed live: a PC-routed reply can take long enough (the PC has
-    // to think, speak, and relay back through polling) that the browser's
-    // autoplay permission window tied to the original tap expires by the
-    // time this runs. play() then rejects, 'ended' never fires since
-    // playback never started, and this used to just swallow the
-    // rejection -- leaving the orb stuck on "Speaking..." forever with no
-    // recovery. Now a failed play() resets state the same way a finished
-    // one does.
-    player.play().catch(() => setState(null));
+    player.onended = afterSpeaking;
+    // Confirmed live: if too long has passed since the tap, the browser's
+    // autoplay permission can expire and play() rejects without ever
+    // firing 'ended' -- reset the same way a finished one does.
+    player.play().catch(afterSpeaking);
   } else {
-    setState(null);
+    afterSpeaking();
   }
 }
 
 document.getElementById("stopBtn").addEventListener("click", () => {
+  const finish = player.onended;          // lets a queued PC message's wait end, so nothing gets stuck
   player.pause();
   player.currentTime = 0;
-  setState(null);
+  pcEventQueue.length = 0;
+  if (finish) finish();
+  else afterSpeaking();
 });
 
 // ---- Text input ----
@@ -778,6 +980,7 @@ function stopRecording() {
   if (mediaRecorder && isRecording) {
     mediaRecorder.stop();
     isRecording = false;
+    if (currentTab === "pc") playClip("send");
   }
 }
 
@@ -786,6 +989,165 @@ document.getElementById("micBtn").addEventListener("click", (e) => {
   if (isRecording) stopRecording();
   else startRecording();
 });
+
+// ============================================================
+// Tabs. Chat = the quick brain. PC = the PC's own Jarvis. The rest are
+// read-only copies of the desktop dashboard, which the PC sends over every
+// few minutes (so they still show the last copy while the PC is off).
+// ============================================================
+const tabEls = document.querySelectorAll(".tab");
+const pcBadge = document.getElementById("pcBadge");
+const textInputEl = document.getElementById("textInput");
+const INFO_TABS = ["money", "store", "ads", "business", "trading", "usage", "needs"];
+let pcUnread = 0;
+
+function bumpPcBadge() {
+  pcUnread += 1;
+  pcBadge.textContent = pcUnread > 9 ? "9+" : String(pcUnread);
+  pcBadge.hidden = false;
+}
+
+function switchTab(name) {
+  if (!["chat", "pc", ...INFO_TABS].includes(name)) name = "chat";
+  currentTab = name;
+  try { localStorage.setItem("jarvisTab", name); } catch (err) {}
+  tabEls.forEach((t) => t.classList.toggle("on", t.dataset.tab === name));
+  document.body.classList.toggle("tab-pc", name === "pc");
+  document.body.classList.toggle("info-tab", INFO_TABS.includes(name));
+  textInputEl.placeholder = name === "pc" ? "Tell your PC..." : "Type to Jarvis...";
+  if (name === "pc") { pcUnread = 0; pcBadge.hidden = true; }
+  else pcLine.textContent = "";
+  if (orbState === "idle") setState(null);   // refresh the idle hint for this tab
+  if (INFO_TABS.includes(name)) renderInfo();
+}
+tabEls.forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
+switchTab(currentTab);
+
+// ---- Info tabs ----
+const infoHead = document.getElementById("infoHead");
+const infoBody = document.getElementById("infoBody");
+let dash = null;            // { dashboard, at, pc_online, now }
+
+function esc(v) {
+  return String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function md(text) {        // the little bit of markdown the desktop panels use
+  return esc(text)
+    .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+    .replace(/\[(.+?)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:var(--cyan)">$1</a>');
+}
+function agoSecs(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 90) return "just now";
+  if (sec < 5400) return Math.round(sec / 60) + " min ago";
+  if (sec < 172800) return Math.round(sec / 3600) + " hours ago";
+  return Math.round(sec / 86400) + " days ago";
+}
+function since(epoch) { return dash && epoch ? agoSecs(dash.now - epoch) : ""; }
+function gbp(n) { return n == null ? "—" : (Number(n) < 0 ? "-£" : "£") + Math.abs(Number(n)).toFixed(2); }
+function tile(k, v, n) { return `<div class="tile"><div class="k">${esc(k)}</div><div class="v">${v}</div>${n ? `<div class="n">${n}</div>` : ""}</div>`; }
+function row(l, r) { return `<div class="row"><span class="l">${l}</span><span class="r">${r}</span></div>`; }
+function card(title, html) { return `<div class="card"><h3>${esc(title)}</h3>${html}</div>`; }
+function problem(section) { return section && section.error ? `<p class="sub">Couldn't read this on the PC: ${esc(section.error)}</p>` : ""; }
+
+const RENDER = {
+  money(d) {
+    const m = d.money || {}, orders = (d.store || {}).orders || {}, list = orders.orders || [], pay = orders.payouts || {};
+    return `<div class="tiles">${tile("Shop orders", list.length || (orders.ok ? "0" : "—"))}${tile("Pending payout", esc(pay.pending || "—"), pay.pending ? "paid to your bank automatically" : "")}</div>`
+      + card("Money check, all four businesses", m.text
+        ? `<div class="md">${md(m.text)}</div><p class="sub">Checked ${esc(since(m.at))}. Run a new check from the desktop Money tab.</p>`
+        : '<p class="sub">Not checked yet. Run it from the desktop Money tab.</p>') + problem(m);
+  },
+  store(d) {
+    const s = d.store || {}, products = s.products || [], o = s.orders || {}, list = o.orders || [], pay = o.payouts || {};
+    const due = {};
+    (pay.transactions || []).forEach((t) => { due[t.order] = t; });
+    const orders = list.length
+      ? list.map((r) => row(
+          `<b>${esc(r.number)}</b> ${esc(r.customer)}<br><span class="sub">${esc(r.date)} · ${esc(r.items)}</span>`,
+          `${esc(r.total)}<br><span class="sub">${esc(r.payment)} · ${esc(r.fulfilment || "not sent")}${due[r.number] ? `<br>${esc(due[r.number].net)} on ${esc(due[r.number].payout_date)}` : ""}</span>`)).join("")
+      : `<p class="sub">${o.at ? "No orders yet." : "Not read yet."}</p>`;
+    return `<div class="tiles">${tile("Orders", list.length || (o.ok ? "0" : "—"))}${tile("Pending payout", esc(pay.pending || "—"))}
+        ${tile("Live products", products.length)}${tile("Christmas range", products.filter((p) => p.christmas).length)}</div>`
+      + card("Orders", orders + (o.problem ? `<p class="sub">${esc(o.problem)}</p>` : "") + (o.at ? `<p class="sub">Read from Shopify ${esc(since(o.at))}.</p>` : ""))
+      + card("Products", products.map((p) => row(
+          `<a href="${esc(p.url)}" target="_blank" rel="noopener" style="color:var(--text)">${esc(p.title)}</a>${p.christmas ? ' <span class="sub">· Christmas</span>' : ""}`,
+          p.price_min === p.price_max ? gbp(p.price_min) : gbp(p.price_min) + "–" + gbp(p.price_max))).join("")) + problem(s);
+  },
+  ads(d) {
+    const t = (d.advertising || {}).tiktok || {}, posts = (d.posts || {}).posts || [];
+    if (!t.ok) return card("TikTok", `<p class="sub">${esc(t.problem || "Not read yet.")}</p>`);
+    const m = t.metrics || {};
+    const ch = (x) => !x || x.change == null ? "" : `<span class="${x.change > 0 ? "good" : x.change < 0 ? "bad" : ""}">${x.change > 0 ? "▲" : x.change < 0 ? "▼" : "■"} ${Math.abs(x.change)}</span> vs week before`;
+    const val = (k) => (m[k] || {}).value ?? "—";
+    const vids = (t.videos || []).slice().sort((a, b) => (b.views || 0) - (a.views || 0));
+    return `<div class="tiles">${tile("Video views (7d)", val("Video views"), ch(m["Video views"]))}${tile("Likes (7d)", val("Likes"), ch(m["Likes"]))}
+        ${tile("Profile views", val("Profile views"), ch(m["Profile views"]))}${tile("Followers", t.followers ?? "—")}</div>`
+      + card("Your videos", vids.map((v) => row(
+          esc((v.caption || "").slice(0, 60)) + `<br><span class="sub">${esc(v.posted)}</span>`,
+          `<b>${v.views ?? "—"}</b> views<br><span class="sub">${v.likes ?? 0} likes</span>`)).join("") + `<p class="sub">TikTok read ${esc(since(t.checked_at))}.</p>`)
+      + (posts.length ? card("Ready to post", posts.map((p) => row(esc(p.title), esc(p.status))).join("") + '<p class="sub">Post them from the desktop Advertising tab.</p>') : "");
+  },
+  business(d) {
+    const b = d.business || {};
+    if (b.error) return problem(b);
+    const bud = b.budget || {};
+    return `<div class="tiles">${tile("Revenue", gbp(b.revenue))}${tile("Spent", gbp(b.cost))}${tile("Profit", `<span class="${(b.profit || 0) >= 0 ? "good" : "bad"}">${gbp(b.profit)}</span>`)}
+        ${tile("Today", gbp(bud.spent_today), "of " + gbp(bud.daily_cap) + " a day")}</div>`
+      + card("What Jarvis is running", (b.experiments || []).slice(0, 15).map((e) => row(esc(e.name) + `<br><span class="sub">${esc(e.type)}</span>`, esc(e.status))).join("") || '<p class="sub">Nothing yet.</p>')
+      + card("What he's learned", (b.lessons || []).slice(0, 6).map((l) => `<p class="md" style="margin:0 0 8px">${esc(l.text)}</p>`).join("") || '<p class="sub">Nothing yet.</p>');
+  },
+  trading(d) {
+    const t = d.trading || {};
+    if (t.error) return problem(t);
+    const pct = (x) => x == null ? "—" : (x * 100).toFixed(2) + "%";
+    return card("Mode", `<p class="md">${esc(t.mode || "")}</p>`)
+      + `<div class="tiles">${tile("Strategies tested", t.tested ?? "—")}${tile("Near misses", t.near_misses ?? "—")}</div>`
+      + card("Forward trials (paper)", (t.forward || []).map((f) => row(
+          esc(f.strategy) + `<br><span class="sub">${esc(f.status)} · day ${Math.floor(f.days_elapsed || 0)}</span>`,
+          `<span class="${(f.pnl_pct || 0) >= 0 ? "good" : "bad"}">${pct(f.pnl_pct)}</span><br><span class="sub">${f.trades} trades</span>`)).join("") || '<p class="sub">None running.</p>')
+      + card("Before any real money", (t.readiness || []).map((r) => row(`${r.ok ? '<span class="good">✔</span>' : '<span class="bad">✘</span>'} ${esc(r.detail)}`, "")).join(""));
+  },
+  usage(d) {
+    const st = d.state || {}, w = (st.usage || {}).windows || {};
+    const names = { five_hour: "5-hour session", seven_day: "Week (all models)" };
+    const bars = Object.keys(w).map((k) => {
+      const u = w[k].utilization, p = u == null ? null : (u <= 1 ? u * 100 : u);
+      const resets = w[k].resets_at ? new Date(w[k].resets_at * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "";
+      return `<div class="row" style="border:none;padding-bottom:0"><span class="l">${esc(names[k] || k.replace(/_/g, " "))}</span><span class="r">${p == null ? "—" : Math.round(p) + "% used"}${resets ? " · resets " + esc(resets) : ""}</span></div>
+              <div class="bar ${p >= 85 ? "hot" : ""}"><div style="width:${Math.min(100, p || 0)}%"></div></div>`;
+    }).join("");
+    return card("Claude allowance", bars || '<p class="sub">Not measured yet.</p>') + card("Brains", `<p class="md">${esc(st.status_text || "")}</p>`);
+  },
+  needs(d) {
+    const n = d.needs_you || {};
+    return card("Needs you", n.text ? `<div class="md">${md(n.text)}</div>` : '<p class="sub">Nothing needs you right now.</p>');
+  },
+};
+
+async function renderInfo() {
+  if (!INFO_TABS.includes(currentTab)) return;
+  try {
+    const res = await fetch("/api/dashboard", { headers: { "Authorization": "Bearer " + getSecret() } });
+    dash = await res.json();
+  } catch (err) {
+    infoHead.textContent = "Couldn't reach Jarvis's phone server.";
+    return;
+  }
+  const d = dash.dashboard;
+  if (!d) {
+    infoHead.textContent = "";
+    infoBody.innerHTML = card("Not here yet", "<p class=\"sub\">The PC hasn't sent its dashboard yet. It sends it every few minutes while the Jarvis window is open on the PC.</p>");
+    return;
+  }
+  infoHead.textContent = `Updated ${since(dash.at)}` + (dash.pc_online ? "" : " · PC is off, showing the last copy");
+  try {
+    infoBody.innerHTML = RENDER[currentTab](d);
+  } catch (err) {
+    infoBody.innerHTML = card("Oops", `<p class="sub">Couldn't show this tab: ${esc(err.message)}</p>`);
+  }
+}
+setInterval(() => { if (INFO_TABS.includes(currentTab)) renderInfo(); }, 60000);
 </script>
 </body>
 </html>
