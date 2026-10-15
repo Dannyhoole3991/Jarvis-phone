@@ -1174,13 +1174,19 @@ function payCards(d) {
   const p = d.cj_pay || {}, answered = (dash && dash.cj_pay_answered) || {}, now = dash ? dash.now : Date.now() / 1000;
   const offers = (p.offers || []).filter((o) => o.expires_at > now);
   const cards = offers.map((o) => {
+    if (o.method === "handoff") {
+      return `<div class="card pay-card"><h3>Pay CJ for an order</h3><div class="md">${esc(o.summary)}</div>
+        <p class="sub">Checked and ready. CJ needs your card's security code, so you pay this one: open CJ, choose your saved card, type the code, tick the terms box, press PAY. Jarvis checks it went through.</p>
+        <div class="pay-btns"><a class="go" style="flex:1;text-align:center;padding:11px 0;border-radius:10px;background:#1f9d5c;color:#fff;font-weight:600;text-decoration:none"
+          href="${esc(o.pay_url)}" target="_blank" rel="noopener">Open CJ to pay $${Number(o.amount_usd).toFixed(2)}</a></div></div>`;
+    }
     const a = answered[String(o.id)];
     const btns = a
       ? `<p class="sub">${a.action === "pay" ? "Pay sent to your PC. Jarvis will say when it's done." : "You said not now."}</p>`
       : `<div class="pay-btns"><button class="go" data-pay="${o.id}" data-act="pay">Pay $${Number(o.amount_usd).toFixed(2)}</button>
          <button data-pay="${o.id}" data-act="reject">Not now</button></div>`;
     return `<div class="card pay-card"><h3>Pay CJ for an order</h3><div class="md">${esc(o.summary)}</div>
-      <p class="sub">Jarvis presses Pay on CJ with the card you saved there. Expires in ${Math.max(1, Math.round((o.expires_at - now) / 60))} min.</p>${btns}</div>`;
+      <p class="sub">Paid from your CJ wallet: Jarvis presses Pay on CJ for this one order. Expires in ${Math.max(1, Math.round((o.expires_at - now) / 60))} min.</p>${btns}</div>`;
   });
   const day = now - 86400, words = { paid: "paid ✔", failed: "didn't go through", needs_danny: "needs you on CJ", unclear: "check it on CJ",
     blocked: "not paid", approved: "paying…", paying: "paying…" };
